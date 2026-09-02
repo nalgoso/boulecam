@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BouleCam</title>
+  <link rel="icon" type="image/png" href="assets/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Top Header Bar -->
+  <header>
+    <div class="brand" style="display:flex; align-items:center; gap:8px;">
+      <img src="assets/logo.png" alt="BouleCam" style="width:28px; height:28px; object-fit:contain;" />
+      <span style="font-weight:700; font-size:1.15rem; letter-spacing:-0.5px;">BouleCam</span>
+    </div>
+
+    <!-- Clean USB / Wi-Fi Toggle directly in header -->
+    <div class="header-toggle-container">
+      <div class="tabs" style="margin: 0;">
+        <button class="tab-btn active" id="tab-usb" style="padding: 4px 12px; font-size: 0.8rem;">🔌 Cable USB</button>
+        <button class="tab-btn" id="tab-wifi" style="padding: 4px 12px; font-size: 0.8rem;">📶 Wi-Fi Auto</button>
+      </div>
+    </div>
+
+    <div class="header-status">
+      <div class="status-indicator">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">Buscando dispositivo...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Studio Workspace -->
+  <main>
+    <!-- Left Monitor Section -->
+    <div class="monitor-pane">
+      <!-- Multi-Camera Selector Bar -->
+      <div class="camera-selector-bar" id="camera-selector-bar">
+        <div class="cam-tab active" data-cam-id="1">
+          <span class="cam-tab-dot"></span>
+          <span class="cam-tab-name">📹 Cam 1</span>
+          <button class="cam-tab-obs-btn" title="Copiar URL para OBS" data-obs-url="http://127.0.0.1:8090/obs/1">📋 Copiar URL OBS</button>
+        </div>
+      </div>
+
+      <!-- Live Video Monitor Container -->
+      <div class="video-container">
+        <!-- Placeholder when disconnected -->
+        <div class="video-placeholder" id="placeholder-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M23 7l-7 5 7 5V7z" />
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+          </svg>
+          <div>
+            <h3 style="color:#fff; font-size:1.1rem; margin-bottom:4px;">Esperando señal del teléfono</h3>
+            <p style="font-size:0.85rem;">Conecta tu teléfono por cable USB o Wi-Fi</p>
+          </div>
+        </div>
+
+        <!-- Live Stream Video Feed -->
+        <img id="live-stream-img" src="" style="width:100%; height:100%; object-fit:contain; display:none; border-radius:12px;" alt="" />
+
+        <!-- Minimalist Status Overlay on Top of Livefeed -->
+        <div class="monitor-overlay-top">
+          <span class="badge-tag" id="badge-resolution">1080p</span>
+          <span class="badge-tag" id="badge-fps">-- FPS</span>
+          <span class="badge-tag" id="badge-latency" style="color:var(--accent-green);">-- ms</span>
+          <span class="badge-tag" id="badge-bitrate">-- Kbps</span>
+          <span class="badge-tag" id="badge-device">Esperando...</span>
+          <span class="badge-tag" id="badge-mode" style="color:var(--accent-cyan);">USB</span>
+        </div>
+
+        <!-- Floating Quick Control Dock -->
+        <div class="monitor-overlay-bottom">
+          <!-- Flip Camera (Front / Back Lens) -->
+          <button class="quick-btn" id="btn-flip" title="Girar Cámara (Frontal / Trasera)">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/>
+            </svg>
+          </button>
+
+          <!-- Torch / Flash -->
+          <button class="quick-btn" id="btn-torch" title="Linterna / Flash">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </button>
+
+          <!-- Microphone Mute -->
+          <button class="quick-btn" id="btn-mic" title="Micrófono Mute / Unmute">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
+
+          <!-- Mirror (Flip Horizontal) -->
+          <button class="quick-btn" id="btn-mirror" title="Espejar Video (Giro horizontal izquierda/derecha)">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="2.5" x2="12" y2="21.5" />
+              <polygon points="14.5,4.5 19.8,4.5 18.6,19.5 13.3,19.5" />
+              <polygon points="9.5,4.5 4.2,4.5 5.4,19.5 10.7,19.5" stroke-dasharray="2.5 2" />
+            </svg>
+          </button>
+
+          <!-- Rotate 180 (Invert Video) -->
+          <button class="quick-btn" id="btn-rotate-180" title="Rotar 180° (Invertir Orientación)">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </button>
+
+          <!-- Dim Screen (Battery Saver in Mobile) -->
+          <button class="quick-btn" id="btn-dim-screen" title="Atenuar pantalla (Brillo mínimo del móvil)">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Controls Panel: Single Unified Card -->
+    <div class="controls-pane">
+      <div class="glass control-section" style="margin-bottom:0; display:flex; flex-direction:column; gap:16px;">
+        <div class="section-header" style="margin-bottom:4px;">
+          <span>🎛️ Ajustes de Cámara</span>
+        </div>
+
+        <!-- ISO -->
+        <div class="control-row">
+          <div class="control-label">
+            <span>Sensibilidad ISO</span>
+            <span class="control-value" id="val-iso">Auto</span>
+          </div>
+          <input type="range" id="slider-iso" min="0" max="6" value="0">
+        </div>
+
+        <!-- EV Compensation -->
+        <div class="control-row">
+          <div class="control-label">
+            <span>Compensación EV</span>
+            <span class="control-value" id="val-ev">0.0 EV</span>
+          </div>
+          <input type="range" id="slider-ev" min="-6" max="6" value="0">
+        </div>
+
+        <!-- Shutter Speed -->
+        <div class="control-row">
+          <div class="control-label">
+            <span>Velocidad de Obturación</span>
+            <span class="control-value" id="val-shutter">Auto</span>
+          </div>
+          <input type="range" id="slider-shutter" min="0" max="7" value="0">
+        </div>
+
+        <!-- White Balance (Slider) -->
+        <div class="control-row">
+          <div class="control-label">
+            <span>Balance de Blancos</span>
+            <span class="control-value" id="val-wb">Auto</span>
+          </div>
+          <input type="range" id="slider-wb" min="0" max="5" value="0">
+        </div>
+
+        <!-- Focus -->
+        <div class="control-row">
+          <div class="control-label">
+            <span>Enfoque</span>
+            <button class="pill-btn active" id="btn-af-toggle" style="padding:2px 8px; font-size:0.75rem;">AF Auto</button>
+          </div>
+          <input type="range" id="slider-focus" min="0" max="100" value="0" disabled>
+        </div>
+
+        <!-- Dedicated OBS Studio Integration Card -->
+        <div class="obs-card glass">
+          <div class="obs-card-header">
+            <span style="font-size:0.8rem; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px;">📡 Señal para OBS Studio</span>
+            <span class="badge-tag" id="obs-cam-badge" style="color:var(--accent-cyan);">Cam 1</span>
+          </div>
+          <div class="obs-input-row">
+            <input type="text" id="input-obs-url" readonly value="http://127.0.0.1:8090/obs/1" spellcheck="false" />
+            <button class="obs-copy-btn" id="btn-copy-obs" title="Copiar enlace para fuente de navegador en OBS">📋 Copiar</button>
+          </div>
+          <div class="obs-help-text">Pega esta URL en una fuente "Navegador" de OBS Studio.</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

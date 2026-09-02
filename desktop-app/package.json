@@ -1,0 +1,58 @@
+{
+  "name": "boulecam",
+  "productName": "BouleCam",
+  "version": "1.0.0",
+  "description": "Puente y control de cámara móvil de alta definición para transmisiones en vivo",
+  "main": "main.js",
+  "author": "Iglesia Boulevard Guzmán <contacto@iglesiaboulevardguzman.com.ar>",
+  "homepage": "https://iglesiaboulevardguzman.com.ar",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "keywords": [
+    "camara",
+    "webcam",
+    "transmision",
+    "boulecam",
+    "iglesiaboulevardguzman"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ar.com.iglesiaboulevardguzman.boulecam",
+    "productName": "BouleCam",
+    "copyright": "Copyright © 2026 Iglesia Boulevard Guzmán",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "BouleCam.exe"
+    },
+    "extraResources": [
+      {
+        "from": "../build/Release/boulecam-desktop.exe",
+        "to": "bin/boulecam-desktop.exe"
+      },
+      {
+        "from": "../build/Release/boulecam-vcam.dll",
+        "to": "bin/boulecam-vcam.dll"
+      }
+    ]
+  }
+}

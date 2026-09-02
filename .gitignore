@@ -1,0 +1,43 @@
+# C++ / Visual Studio Builds
+build/
+bin/
+*.obj
+*.pdb
+*.ilk
+*.suo
+*.user
+*.vcxproj.user
+*.vcxproj.filters.user
+x64/
+Release/
+Debug/
+
+# Android build outputs
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/.idea/
+mobile/android/*.iml
+mobile/android/app/*.iml
+
+# Node / Electron
+node_modules/
+desktop-app/node_modules/
+desktop-app/dist/
+dist/
+
+# System / IDE / Temporary files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.png
+*.jpg
+.tempmediaStorage/
+test_run.log
+
+# Git should track source code; releases are uploaded as GitHub Release assets
+BouleCam.apk
+BouleCam.exe
