@@ -132,5 +132,5 @@ boulecam/
 ---
 
 ## 📜 Licencia
-
+Creado 100% con el agente de Antigravity IDE. Siéntanse libres de usarlo gratuitamente
 Desarrollado bajo licencia **MIT**. Desarrollado con ❤️ para la comunidad de streaming y producción en vivo.
