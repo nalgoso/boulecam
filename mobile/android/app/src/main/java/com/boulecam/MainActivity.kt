@@ -102,8 +102,9 @@ class MainActivity : AppCompatActivity() {
         BouleCamStreamService.start(this)
 
         initViews()
+        val hasUsbCable = checkUsbCableState()
+        isUsbMode = hasUsbCable
         setupUsbReceiver()
-        checkUsbCableState()
         setupOrientationListener()
 
         if (checkCameraPermission()) {
@@ -166,24 +167,28 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(usbReceiver, filter)
     }
 
-    private fun checkUsbCableState() {
+    private fun checkUsbCableState(): Boolean {
         try {
             val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
-            val isPlugged = (plugged == BatteryManager.BATTERY_PLUGGED_USB || plugged == BatteryManager.BATTERY_PLUGGED_AC)
-            updateUsbState(isPlugged)
+            val isPlugged = (plugged == BatteryManager.BATTERY_PLUGGED_USB)
+            isUsbCableConnected = isPlugged
+            return isPlugged
         } catch (e: Exception) {
-            updateUsbState(false)
+            isUsbCableConnected = false
+            return false
         }
     }
 
     private fun updateUsbState(connected: Boolean) {
+        if (isUsbCableConnected == connected) return
+        val wasConnected = isUsbCableConnected
         isUsbCableConnected = connected
         runOnUiThread {
-            if (!connected && isUsbMode) {
+            if (wasConnected && !connected && isUsbMode) {
                 // If in USB mode and cable unplugs, auto fallback to Wi-Fi
                 setConnectionMode(usb = false)
-                Toast.makeText(this@MainActivity, "Cable USB desconectado. Cambiando a Wi-Fi...", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Cable USB desconectado. Cambiando a Wi-Fi...", Toast.LENGTH_SHORT).show()
             }
             updateConnectionButtonsUI()
         }
@@ -603,29 +608,25 @@ class MainActivity : AppCompatActivity() {
         )
         sender?.start()
 
-        // 2. Start Auto-Discovery Manager for Wi-Fi & USB Auto-Detect
+        // 2. Start Auto-Discovery Manager for Wi-Fi
         discoveryManager = AutoDiscoveryManager(this) { device ->
             runOnUiThread {
-                if (device.isUsb) {
-                    isUsbCableConnected = true
-                    updateConnectionButtonsUI()
-                    if (isUsbMode) {
-                        sender?.setHost("127.0.0.1", 8088)
-                    }
-                } else {
-                    // Wi-Fi PC detected
-                    if (!isUsbCableConnected || !isUsbMode) {
-                        if (isUsbMode && !isUsbCableConnected) {
-                            isUsbMode = false
-                            updateConnectionButtonsUI()
-                        }
-                        if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
-                            sender?.setHost(device.ip, device.port)
-                        }
-                        if (!wifiToastShown) {
-                            wifiToastShown = true
-                            Toast.makeText(this, "PC BouleCam encontrada por WiFi (${device.ip})", Toast.LENGTH_SHORT).show()
-                        }
+                // If stream is ALREADY connected and running, NEVER switch hosts or disrupt the stream!
+                if (sender?.isConnected() == true) {
+                    return@runOnUiThread
+                }
+
+                // If user selected USB mode, stay on USB (127.0.0.1)
+                if (isUsbMode) {
+                    return@runOnUiThread
+                }
+
+                // In Wi-Fi mode: update target host to the discovered PC
+                if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
+                    sender?.setHost(device.ip, device.port)
+                    if (!wifiToastShown) {
+                        wifiToastShown = true
+                        Toast.makeText(this, "PC BouleCam encontrada por WiFi (${device.ip})", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

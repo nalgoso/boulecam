@@ -470,12 +470,18 @@ function openUnlinkModal(camId) {
   modalUnlink.style.display = 'flex';
 }
 
+let lastRenderedDeviceKey = '';
+
 // Render dynamic camera selector tabs
 function renderDeviceTabs(devices, activeId) {
   if (!cameraSelectorBar) return;
   lastDevicesList = devices || [];
 
   const availableDevices = (devices || []).filter(d => !unlinkedCamIds.has(d.id));
+
+  const deviceKey = `${activeId}_` + availableDevices.map(d => `${d.id}:${d.name}:${customCamNames[d.id]||''}:${d.isVertical}`).join('|');
+  if (deviceKey === lastRenderedDeviceKey) return;
+  lastRenderedDeviceKey = deviceKey;
 
   if (availableDevices.length === 0) {
     cameraSelectorBar.innerHTML = `
@@ -752,13 +758,9 @@ function updateUIStatus(data) {
     }
   }
 
-  // Detect active device change from server or fallback if current was unlinked
-  const serverActiveId = data.activeDeviceId || 1;
-  if (!unlinkedCamIds.has(serverActiveId) && serverActiveId !== lastActiveDeviceId) {
-    lastActiveDeviceId = serverActiveId;
-    activeCamId = serverActiveId;
-    applyActiveConfigToUI(false);
-  } else if (unlinkedCamIds.has(activeCamId) && availableDevices.length > 0) {
+  // Keep the user on their currently selected camera tab as long as it exists
+  const activeDeviceStillExists = availableDevices.some(d => d.id === activeCamId);
+  if (!activeDeviceStillExists && availableDevices.length > 0) {
     activeCamId = availableDevices[0].id;
     lastActiveDeviceId = activeCamId;
     applyActiveConfigToUI(false);
@@ -1072,6 +1074,18 @@ function setupEvents() {
         }
       } catch (e) {
         showToast(`⚠️ Error: ${e.message}`);
+      }
+    });
+  }
+
+  // Connection Mode Toggle Click Handler
+  if (modeToggle) {
+    modeToggle.addEventListener('click', () => {
+      const cur = (lastDevicesList || []).find(d => d.id === activeCamId);
+      if (cur && cur.isUsb) {
+        showToast('🔌 Señal activa por Cable USB (Ultra baja latencia)');
+      } else {
+        showToast('📶 Señal activa por Wi-Fi. Para cambiar a USB conecta el cable con depuración USB.');
       }
     });
   }

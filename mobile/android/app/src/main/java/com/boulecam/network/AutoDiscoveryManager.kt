@@ -20,7 +20,7 @@ class AutoDiscoveryManager(
 ) {
     private val isRunning = AtomicBoolean(false)
     private var multicastLock: WifiManager.MulticastLock? = null
-    private val executor = Executors.newFixedThreadPool(3)
+    private val executor = Executors.newSingleThreadExecutor()
 
     fun start() {
         if (isRunning.getAndSet(true)) return
@@ -33,14 +33,8 @@ class AutoDiscoveryManager(
             }
         } catch (ignored: Exception) {}
 
-        // Task 1: Check USB (127.0.0.1) first
-        executor.execute { checkUsbConnectionLoop() }
-
-        // Task 2: UDP Broadcast Listener & Beacon Transmitter
+        // Non-intrusive UDP Discovery on port 8089
         executor.execute { udpDiscoveryLoop() }
-
-        // Task 3: Fast Subnet Scanner (Parallel TCP scan fallback)
-        executor.execute { subnetScannerLoop() }
     }
 
     fun stop() {
@@ -51,25 +45,6 @@ class AutoDiscoveryManager(
             }
         } catch (ignored: Exception) {}
         executor.shutdownNow()
-    }
-
-    /**
-     * Checks if USB cable (ADB reverse tunnel on 127.0.0.1:8088) is active
-     */
-    private fun checkUsbConnectionLoop() {
-        while (isRunning.get()) {
-            try {
-                val socket = Socket()
-                socket.connect(InetSocketAddress("127.0.0.1", 8088), 600)
-                socket.close()
-
-                // USB is reachable!
-                onDeviceFound(DiscoveredDevice("127.0.0.1", 8088, "PC USB Cable", true))
-                Thread.sleep(3000)
-            } catch (e: Exception) {
-                try { Thread.sleep(1500) } catch (ignored: InterruptedException) { break }
-            }
-        }
     }
 
     /**
@@ -122,48 +97,12 @@ class AutoDiscoveryManager(
                     // Normal timeout
                 } catch (ignored: Exception) {}
 
-                try { Thread.sleep(1000) } catch (e: InterruptedException) { break }
+                try { Thread.sleep(1500) } catch (e: InterruptedException) { break }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            // Socket error or shutdown
         } finally {
             socket?.close()
-        }
-    }
-
-    /**
-     * Fallback: Scans local /24 subnet for port 8088 if router blocks UDP broadcast
-     */
-    private fun subnetScannerLoop() {
-        while (isRunning.get()) {
-            val phoneIp = getPhoneIp()
-            if (phoneIp.isNotEmpty() && phoneIp != "0.0.0.0" && phoneIp.contains(".")) {
-                val prefix = phoneIp.substringBeforeLast(".") + "."
-                val myLastOctet = phoneIp.substringAfterLast(".").toIntOrNull() ?: 0
-
-                // Scan common IP range around our own IP first
-                val candidates = mutableListOf<Int>()
-                for (i in 1..254) {
-                    if (i != myLastOctet) candidates.add(i)
-                }
-
-                // Sort by distance to our own IP for fast local match
-                candidates.sortBy { Math.abs(it - myLastOctet) }
-
-                for (octet in candidates) {
-                    if (!isRunning.get()) break
-                    val targetIp = prefix + octet
-                    try {
-                        val sock = Socket()
-                        sock.connect(InetSocketAddress(targetIp, 8088), 120)
-                        sock.close()
-
-                        onDeviceFound(DiscoveredDevice(targetIp, 8088, "PC Wi-Fi ($targetIp)", false))
-                        Thread.sleep(5000)
-                    } catch (ignored: Exception) {}
-                }
-            }
-            try { Thread.sleep(8000) } catch (e: InterruptedException) { break }
         }
     }
 

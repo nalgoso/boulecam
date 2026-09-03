@@ -190,6 +190,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    tcpReceiver.SetDisconnectCallback([&httpBridge, &decoders, &decodersMutex, &deviceRotations, &deviceFrameCounts, &deviceByteCounts, &deviceLatencies](int deviceId) {
+        httpBridge.RemoveDevice(deviceId);
+        std::lock_guard<std::recursive_mutex> lock(decodersMutex);
+        decoders.erase(deviceId);
+        deviceRotations.erase(deviceId);
+        deviceFrameCounts.erase(deviceId);
+        deviceByteCounts.erase(deviceId);
+        deviceLatencies.erase(deviceId);
+        std::cout << "[Service] Cleaned up state for disconnected Device " << deviceId << std::endl;
+    });
+
     tcpReceiver.SetAudioCallback([&httpBridge, &dspPipeline, &wasapiMonitor](
         int deviceId, const BouleCamAudioHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
         

@@ -79,6 +79,7 @@ public:
     bool ReassignClientId(int fromId, int toId);
 
     void SetAudioCallback(AudioReceivedCallback audioCb) { m_audioCallback = audioCb; }
+    void SetDisconnectCallback(std::function<void(int deviceId)> disconnectCb) { m_disconnectCallback = disconnectCb; }
 
     std::vector<ConnectedClient> GetConnectedClients();
     double GetClientRttMs(int deviceId);
@@ -104,6 +105,7 @@ private:
     HandshakeReceivedCallback m_handshakeCallback;
     CameraStateReceivedCallback m_cameraStateCallback;
     AudioReceivedCallback m_audioCallback;
+    std::function<void(int deviceId)> m_disconnectCallback;
 };
 
 } // namespace boulecam
