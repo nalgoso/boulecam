@@ -69,6 +69,52 @@ function startBackendService() {
     }
 }
 
+function getRegisterVcamPath() {
+    if (app.isPackaged) {
+        const bundledInResources = path.join(process.resourcesPath, 'bin', 'register_vcam.exe');
+        if (fs.existsSync(bundledInResources)) return bundledInResources;
+        const nextToResources = path.join(process.resourcesPath, 'register_vcam.exe');
+        if (fs.existsSync(nextToResources)) return nextToResources;
+        const nextToExe = path.join(path.dirname(app.getPath('exe')), 'register_vcam.exe');
+        if (fs.existsSync(nextToExe)) return nextToExe;
+    }
+    return path.join(__dirname, '..', 'build', 'Release', 'register_vcam.exe');
+}
+
+ipcMain.handle('install-vcam', async () => {
+    const regExe = getRegisterVcamPath();
+    if (!fs.existsSync(regExe)) {
+        return { success: false, error: 'register_vcam.exe no encontrado' };
+    }
+    return new Promise((resolve) => {
+        const cmd = `powershell -Command "Start-Process -FilePath '${regExe}' -ArgumentList '--install' -Verb RunAs -Wait"`;
+        exec(cmd, (err, stdout, stderr) => {
+            if (err) {
+                resolve({ success: false, error: stderr || err.message });
+            } else {
+                resolve({ success: true });
+            }
+        });
+    });
+});
+
+ipcMain.handle('uninstall-vcam', async () => {
+    const regExe = getRegisterVcamPath();
+    if (!fs.existsSync(regExe)) {
+        return { success: false, error: 'register_vcam.exe no encontrado' };
+    }
+    return new Promise((resolve) => {
+        const cmd = `powershell -Command "Start-Process -FilePath '${regExe}' -ArgumentList '--uninstall' -Verb RunAs -Wait"`;
+        exec(cmd, (err, stdout, stderr) => {
+            if (err) {
+                resolve({ success: false, error: stderr || err.message });
+            } else {
+                resolve({ success: true });
+            }
+        });
+    });
+});
+
 function createTray() {
     if (tray) return;
 

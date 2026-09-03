@@ -52,6 +52,10 @@
       {
         "from": "../build/Release/boulecam-vcam.dll",
         "to": "bin/boulecam-vcam.dll"
+      },
+      {
+        "from": "../build/Release/register_vcam.exe",
+        "to": "bin/register_vcam.exe"
       }
     ]
   }

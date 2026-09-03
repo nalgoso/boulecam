@@ -510,6 +510,55 @@ class MainActivity : AppCompatActivity() {
         return "$manufacturer ${android.os.Build.MODEL}"
     }
 
+    private var telemetryTimer: java.util.Timer? = null
+
+    private fun getBatteryInfo(): Pair<Float, Float> {
+        return try {
+            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val bIntent = registerReceiver(null, filter)
+            val level = bIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = bIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val pct = if (level >= 0 && scale > 0) (level / scale.toFloat()) * 100f else -1.0f
+            val tempRaw = bIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+            val tempC = tempRaw / 10.0f
+            pct to tempC
+        } catch (e: Exception) {
+            -1.0f to 0.0f
+        }
+    }
+
+    private fun startTelemetryTimer() {
+        stopTelemetryTimer()
+        telemetryTimer = java.util.Timer().apply {
+            scheduleAtFixedRate(object : java.util.TimerTask() {
+                override fun run() {
+                    if (sender?.isConnected() == true) {
+                        val (bat, temp) = getBatteryInfo()
+                        val mask = cameraPipeline?.getLensesMask() ?: 3
+                        val zoom = cameraPipeline?.getCurrentZoom() ?: 1.0f
+                        val lens = cameraPipeline?.getCurrentLens() ?: 0
+                        sender?.sendTelemetry(
+                            batteryLevel = bat,
+                            temperatureC = temp,
+                            lensesMask = mask,
+                            currentZoom = zoom,
+                            currentLens = lens,
+                            isDimmed = isDimScreenActive,
+                            isTorchOn = cameraPipeline?.isTorchActive() ?: false
+                        )
+                    }
+                }
+            }, 500, 2000)
+        }
+    }
+
+    private fun stopTelemetryTimer() {
+        try {
+            telemetryTimer?.cancel()
+            telemetryTimer = null
+        } catch (ignored: Exception) {}
+    }
+
     private fun setupStreamingPipeline() {
         val devName = getFriendlyDeviceName()
 
@@ -530,6 +579,7 @@ class MainActivity : AppCompatActivity() {
                         if (isMicEnabled) {
                             audioPipeline?.start()
                         }
+                        startTelemetryTimer()
                     } else {
                         val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi"
                         statusTextView?.text = "STATUS: BUSCANDO PC ($searchingLabel)..."
@@ -537,6 +587,7 @@ class MainActivity : AppCompatActivity() {
                         // PAUSE HARDWARE ENCODER AND AUDIO TO SAVE BATTERY AND PREVENT OVERHEATING!
                         encoder?.setSuspended(true)
                         audioPipeline?.stop()
+                        stopTelemetryTimer()
                     }
                 }
             },
@@ -648,9 +699,9 @@ class MainActivity : AppCompatActivity() {
     private fun handleRemoteCommand(cmd: CameraCommand) {
         runOnUiThread {
             when (cmd.action) {
-                1 -> { // BOULECAM_ACTION_SET_LENS (0 = Back, 1 = Front)
+                1 -> { // BOULECAM_ACTION_SET_LENS (0 = Back Main, 1 = Front, 2 = UltraWide, 3 = Tele/Macro)
                     cameraExecutor.execute {
-                        cameraPipeline?.setLensFacing(cmd.intParam1)
+                        cameraPipeline?.setLens(cmd.intParam1)
                         runOnUiThread { updatePreviewTransform() }
                     }
                 }
@@ -690,12 +741,16 @@ class MainActivity : AppCompatActivity() {
                 10 -> { // BOULECAM_ACTION_SET_DIM_SCREEN (0 = Normal, 1 = Dim)
                     setDimScreen(cmd.intParam1 != 0, notifyPeer = false)
                 }
+                11 -> { // BOULECAM_ACTION_SET_ZOOM (floatParam1 = zoom ratio)
+                    cameraPipeline?.setZoom(cmd.floatParam1)
+                }
             }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopTelemetryTimer()
         BouleCamStreamService.stop(this)
 
         try {

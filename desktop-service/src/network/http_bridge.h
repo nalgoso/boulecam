@@ -29,6 +29,11 @@ struct DeviceInfo {
     float fps = 0.0f;
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
+    float batteryLevel = -1.0f;
+    float temperatureC = 0.0f;
+    uint8_t lensesMask = 3;
+    float zoomRatio = 1.0f;
+    uint8_t currentLens = 0;
 };
 
 struct SystemStatus {
@@ -45,6 +50,11 @@ struct SystemStatus {
     float fps = 0.0f;
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
+    float batteryLevel = -1.0f;
+    float temperatureC = 0.0f;
+    uint8_t lensesMask = 3;
+    float zoomRatio = 1.0f;
+    uint8_t currentLens = 0;
     std::vector<std::string> localIps;
 };
 
@@ -60,6 +70,7 @@ public:
     void SetUsbStatus(bool connected);
     void SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip = "", bool isUsb = false);
     void SetDeviceDimState(int deviceId, bool isDimmed);
+    void SetDeviceTelemetry(int deviceId, float batteryLevel, float temperatureC, uint8_t lensesMask, float currentZoom, uint8_t currentLens);
     void RemoveDevice(int deviceId);
     bool DisconnectDevice(int deviceId);
     bool SwapDevices(int camA, int camB);

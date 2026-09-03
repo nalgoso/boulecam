@@ -161,9 +161,16 @@ int main(int argc, char* argv[]) {
                 shmProducer.SetStreamingActive(true);
             }
             httpBridge.SetDeviceMetadata(deviceId, handshake.device_name, handshake.width, handshake.height, clientIp, isUsb);
+            // Request an immediate IDR keyframe so desktop and virtual camera start instantly
+            BouleCamCameraCmd kfCmd{};
+            kfCmd.magic = BOULECAM_MAGIC;
+            kfCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+            kfCmd.action = BOULECAM_ACTION_REQUEST_KEYFRAME;
+            tcpReceiver.SendCameraCommand(kfCmd, deviceId);
         },
         [&httpBridge](int deviceId, const BouleCamCameraState& state) {
             httpBridge.SetDeviceDimState(deviceId, state.dim_screen_active != 0);
+            httpBridge.SetDeviceTelemetry(deviceId, state.battery_level, state.device_temperature, state.available_lenses_mask, state.current_zoom, state.current_lens);
         }
     );
 

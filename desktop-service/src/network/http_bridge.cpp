@@ -269,6 +269,24 @@ void HttpControlBridge::SetDeviceDimState(int deviceId, bool isDimmed) {
     }
 }
 
+void HttpControlBridge::SetDeviceTelemetry(int deviceId, float batteryLevel, float temperatureC, uint8_t lensesMask, float currentZoom, uint8_t currentLens) {
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    if (m_devices.find(deviceId) != m_devices.end()) {
+        m_devices[deviceId].batteryLevel = batteryLevel;
+        m_devices[deviceId].temperatureC = temperatureC;
+        if (lensesMask > 0) m_devices[deviceId].lensesMask = lensesMask;
+        if (currentZoom > 0.0f) m_devices[deviceId].zoomRatio = currentZoom;
+        m_devices[deviceId].currentLens = currentLens;
+    }
+    if (deviceId == m_activeDeviceId.load() || m_devices.size() <= 1) {
+        m_status.batteryLevel = batteryLevel;
+        m_status.temperatureC = temperatureC;
+        if (lensesMask > 0) m_status.lensesMask = lensesMask;
+        if (currentZoom > 0.0f) m_status.zoomRatio = currentZoom;
+        m_status.currentLens = currentLens;
+    }
+}
+
 void HttpControlBridge::RemoveDevice(int deviceId) {
     {
         std::lock_guard<std::mutex> lock(m_statusMutex);
@@ -748,6 +766,11 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                  << "\"fps\":" << m_status.fps << ","
                  << "\"latencyMs\":" << m_status.latencyMs << ","
                  << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
+                 << "\"batteryLevel\":" << m_status.batteryLevel << ","
+                 << "\"temperatureC\":" << m_status.temperatureC << ","
+                 << "\"lensesMask\":" << (int)m_status.lensesMask << ","
+                 << "\"zoomRatio\":" << m_status.zoomRatio << ","
+                 << "\"currentLens\":" << (int)m_status.currentLens << ","
                  << "\"localIps\":[";
             for (size_t i = 0; i < m_status.localIps.size(); ++i) {
                 json << "\"" << m_status.localIps[i] << "\"";
@@ -770,6 +793,11 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                      << "\"fps\":" << d.fps << ","
                      << "\"latencyMs\":" << d.latencyMs << ","
                      << "\"bitrateKbps\":" << d.bitrateKbps << ","
+                     << "\"batteryLevel\":" << d.batteryLevel << ","
+                     << "\"temperatureC\":" << d.temperatureC << ","
+                     << "\"lensesMask\":" << (int)d.lensesMask << ","
+                     << "\"zoomRatio\":" << d.zoomRatio << ","
+                     << "\"currentLens\":" << (int)d.currentLens << ","
                      << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
                      << "}";
                 if (++idx < m_devices.size()) json << ",";

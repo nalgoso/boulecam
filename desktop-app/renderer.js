@@ -6,7 +6,8 @@ const API_BASE = 'http://127.0.0.1:8090';
 const DEFAULT_CAM_SETTINGS = {
   isMirrored: false,
   manualRotation: 0,
-  currentLens: 0, // 0 = back, 1 = front
+  currentLens: 0, // 0 = back, 1 = front, 2 = ultrawide, 3 = tele/macro
+  zoomRatio: 1.0,
   isTorchOn: false,
   isMicEnabled: true,
   isDimScreenActive: false,
@@ -21,6 +22,7 @@ const DEFAULT_CAM_SETTINGS = {
 let isConnected = false;
 let activeCamId = 1;
 let currentLens = 0;
+let zoomRatio = 1.0;
 let isTorchOn = false;
 let isMicEnabled = true;
 let isAutoAF = true;
@@ -240,9 +242,32 @@ function applyActiveConfigToUI(syncHardware = true) {
     sliderFocus.value = cfg.focusValue || 0;
   }
 
+  // Zoom slider and label
+  const sliderZoom = document.getElementById('slider-zoom');
+  const valZoom = document.getElementById('val-zoom');
+  const zVal = cfg.zoomRatio || 1.0;
+  if (sliderZoom) sliderZoom.value = Math.round(zVal * 10);
+  if (valZoom) valZoom.textContent = `${zVal.toFixed(1)}x`;
+  document.querySelectorAll('.zoom-quick-btn').forEach(b => {
+    const bRatio = b.id === 'btn-zoom-1x' ? 1.0 : (b.id === 'btn-zoom-2x' ? 2.0 : 5.0);
+    b.classList.toggle('active', Math.abs(bRatio - zVal) < 0.2);
+  });
+
+  // Lens buttons
+  const lensButtons = document.querySelectorAll('.lens-btn');
+  const valLensName = document.getElementById('val-lens-name');
+  lensButtons.forEach(b => {
+    const isThis = parseInt(b.getAttribute('data-lens')) === (cfg.currentLens || 0);
+    b.classList.toggle('active', isThis);
+    if (isThis && valLensName) {
+      valLensName.textContent = b.textContent.trim().replace(/^[^\s]+\s*/, '');
+    }
+  });
+
   // Synchronize state with camera hardware if online
   if (syncHardware && isConnected) {
     sendCommand(1, currentLens);
+    if (zVal > 1.0) sendCommand(11, 0, 0, zVal);
     sendCommand(2, isTorchOn ? 1 : 0);
     sendCommand(8, isMicEnabled ? 1 : 0);
     sendCommand(10, isDimScreenActive ? 1 : 0);
@@ -599,6 +624,50 @@ function updateUIStatus(data) {
 
     if (badgeDevice) badgeDevice.textContent = devName;
 
+    // Real Telemetry: Battery & Thermal Temperature
+    const telemetryContainer = document.getElementById('telemetry-badges');
+    const badgeBattery = document.getElementById('badge-battery');
+    const batteryVal = document.getElementById('battery-val');
+    const badgeTemp = document.getElementById('badge-temp');
+    const tempVal = document.getElementById('temp-val');
+
+    const bat = (curDev.batteryLevel !== undefined && curDev.batteryLevel >= 0) ? curDev.batteryLevel : data.batteryLevel;
+    const temp = (curDev.temperatureC !== undefined && curDev.temperatureC > 0) ? curDev.temperatureC : data.temperatureC;
+
+    if (telemetryContainer) {
+      telemetryContainer.style.display = 'flex';
+      if (bat !== undefined && bat >= 0 && batteryVal) {
+        badgeBattery.style.display = 'flex';
+        batteryVal.textContent = `${Math.round(bat)}%`;
+        if (bat <= 20) {
+          badgeBattery.classList.add('warn');
+        } else {
+          badgeBattery.classList.remove('warn');
+        }
+      } else if (badgeBattery) {
+        badgeBattery.style.display = 'none';
+      }
+
+      if (temp !== undefined && temp > 0 && tempVal) {
+        badgeTemp.style.display = 'flex';
+        tempVal.textContent = `${temp.toFixed(1)}°C`;
+        if (temp >= 42.0) {
+          badgeTemp.classList.add('warn');
+        } else {
+          badgeTemp.classList.remove('warn');
+        }
+      } else if (badgeTemp) {
+        badgeTemp.style.display = 'none';
+      }
+    }
+
+    // Dynamic Multi-Camera Lens Visibility based on hardware mask
+    const lensesMask = curDev.lensesMask || data.lensesMask || 3;
+    const btnLensUltra = document.getElementById('btn-lens-ultra');
+    const btnLensTele = document.getElementById('btn-lens-tele');
+    if (btnLensUltra) btnLensUltra.style.display = (lensesMask & 4) !== 0 ? 'flex' : 'none';
+    if (btnLensTele) btnLensTele.style.display = (lensesMask & 8) !== 0 ? 'flex' : 'none';
+
     // Real Connection Type (Cable USB vs WiFi) with Sliding Circular Toggle
     const isDeviceUsb = (curDev.isUsb === true);
     if (modeToggle) {
@@ -625,6 +694,8 @@ function updateUIStatus(data) {
     }
   } else {
     isStreamingActive = false;
+    const telemetryContainer = document.getElementById('telemetry-badges');
+    if (telemetryContainer) telemetryContainer.style.display = 'none';
     statusDot.classList.remove('connected');
     statusText.textContent = 'Esperando conexión...';
     statusText.style.color = 'var(--accent-orange)';
@@ -897,6 +968,85 @@ function setupEvents() {
         showToast('✓ Búsqueda de dispositivos completada');
         pollStatus();
       }, 800);
+    });
+  }
+
+  // Multi-Lens Selection Buttons (Wide, Ultra-Wide, Front, Tele/Macro)
+  const lensButtons = document.querySelectorAll('.lens-btn');
+  const valLensName = document.getElementById('val-lens-name');
+  lensButtons.forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const lensType = parseInt(btn.getAttribute('data-lens'));
+      lensButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (valLensName) {
+        valLensName.textContent = btn.textContent.trim().replace(/^[^\s]+\s*/, '');
+      }
+      currentLens = lensType;
+      saveCurrentConfig({ currentLens: lensType, zoomRatio: 1.0 });
+
+      // Reset zoom slider to 1.0x on lens switch
+      const sliderZoom = document.getElementById('slider-zoom');
+      const valZoom = document.getElementById('val-zoom');
+      if (sliderZoom) sliderZoom.value = 10;
+      if (valZoom) valZoom.textContent = '1.0x';
+      document.querySelectorAll('.zoom-quick-btn').forEach(b => b.classList.toggle('active', b.id === 'btn-zoom-1x'));
+
+      await sendCommand(1, lensType);
+    });
+  });
+
+  // Smooth Digital Zoom Slider and Quick Presets
+  const sliderZoom = document.getElementById('slider-zoom');
+  const valZoom = document.getElementById('val-zoom');
+  const setZoom = async (ratio) => {
+    const clamped = Math.min(Math.max(ratio, 1.0), 8.0);
+    if (valZoom) valZoom.textContent = `${clamped.toFixed(1)}x`;
+    if (sliderZoom) sliderZoom.value = Math.round(clamped * 10);
+    document.querySelectorAll('.zoom-quick-btn').forEach(b => {
+      const bRatio = b.id === 'btn-zoom-1x' ? 1.0 : (b.id === 'btn-zoom-2x' ? 2.0 : 5.0);
+      b.classList.toggle('active', Math.abs(bRatio - clamped) < 0.2);
+    });
+    saveCurrentConfig({ zoomRatio: clamped });
+    await sendCommand(11, 0, 0, clamped);
+  };
+
+  if (sliderZoom) {
+    sliderZoom.addEventListener('input', (e) => {
+      const ratio = parseInt(e.target.value) / 10.0;
+      setZoom(ratio);
+    });
+  }
+
+  const btnZoom1x = document.getElementById('btn-zoom-1x');
+  const btnZoom2x = document.getElementById('btn-zoom-2x');
+  const btnZoom5x = document.getElementById('btn-zoom-5x');
+  if (btnZoom1x) btnZoom1x.addEventListener('click', () => setZoom(1.0));
+  if (btnZoom2x) btnZoom2x.addEventListener('click', () => setZoom(2.0));
+  if (btnZoom5x) btnZoom5x.addEventListener('click', () => setZoom(5.0));
+
+  // Windows Virtual Camera Install & Activate Button
+  const btnVcam = document.getElementById('btn-vcam');
+  if (btnVcam) {
+    btnVcam.addEventListener('click', async () => {
+      showToast('⏳ Registrando BouleCam como Cámara Virtual nativa de Windows...');
+      try {
+        if (window.boulecam && window.boulecam.installVcam) {
+          const res = await window.boulecam.installVcam();
+          if (res.success) {
+            btnVcam.classList.add('active');
+            const vcamText = document.getElementById('vcam-btn-text');
+            if (vcamText) vcamText.textContent = '✓ Cámara Virtual Activa';
+            showToast('✅ ¡Cámara Virtual activada! Ya disponible en Zoom, Discord, Meet y Teams.');
+          } else {
+            showToast(`⚠️ Permiso o registro de cámara: ${res.error || 'Cancelado por usuario'}`);
+          }
+        } else {
+          showToast('ℹ️ Cámara Virtual lista para usarse en Windows.');
+        }
+      } catch (e) {
+        showToast(`⚠️ Error: ${e.message}`);
+      }
     });
   }
 
