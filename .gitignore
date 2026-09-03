@@ -39,6 +39,5 @@ Thumbs.db
 test_run.log
 
 # Git should track source code; releases are uploaded as GitHub Release assets
-BouleCam.apk
-BouleCam-Mobile.apk
-BouleCam.exe
+BouleCam*.apk
+BouleCam*.exe
