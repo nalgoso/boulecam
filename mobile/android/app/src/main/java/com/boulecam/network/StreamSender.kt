@@ -104,14 +104,14 @@ class StreamSender(
         }
     }
 
-    fun sendAudio(pcmData: ByteArray, size: Int) {
+    fun sendAudio(pcmData: ByteArray, size: Int, channels: Int = 1) {
         if (!isConnected.get()) return
 
         // 12-byte BouleCamAudioHeader (BOULECAM_PKT_AUDIO_DATA = 0x40)
         val headerBuffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
         headerBuffer.putInt(0x4243414D)        // Magic "BCAM"
         headerBuffer.put(0x40.toByte())         // BOULECAM_PKT_AUDIO_DATA
-        headerBuffer.put(1.toByte())            // 1 = Mono
+        headerBuffer.put(channels.toByte())     // 1 = Mono, 2 = Stereo
         headerBuffer.putShort(48000.toShort())  // 48000 Hz
         headerBuffer.putInt(size)               // Payload size
 
@@ -277,11 +277,14 @@ class StreamSender(
         currentZoom: Float,
         currentLens: Int,
         isDimmed: Boolean,
-        isTorchOn: Boolean = false
+        isTorchOn: Boolean = false,
+        micChannels: Int = 1,
+        micCapsule: Int = 0,
+        micBeamforming: Boolean = false
     ) {
         if (!isConnected.get()) return
         try {
-            val buffer = ByteBuffer.allocate(43).order(ByteOrder.LITTLE_ENDIAN)
+            val buffer = ByteBuffer.allocate(46).order(ByteOrder.LITTLE_ENDIAN)
             buffer.putInt(0x4243414D) // BOULECAM_MAGIC
             buffer.put(0x31.toByte())  // BOULECAM_PKT_CAMERA_STATE
             buffer.put(currentLens.toByte()) // current_lens (0=Back, 1=Front, 2=UltraWide, 3=Tele)
@@ -297,6 +300,9 @@ class StreamSender(
             buffer.putFloat(temperatureC) // device_temperature in Celsius
             buffer.put(lensesMask.toByte()) // available_lenses_mask
             buffer.putFloat(currentZoom) // current_zoom
+            buffer.put(micChannels.toByte()) // mic_channels (1 = Mono, 2 = Stereo)
+            buffer.put(micCapsule.toByte())  // mic_capsule (0 = Auto, 1 = Bottom, 2 = Back, 3 = Front)
+            buffer.put((if (micBeamforming) 1 else 0).toByte()) // mic_beamforming
             val packet = buffer.array()
             sendQueue.offer(packet)
         } catch (e: Exception) {

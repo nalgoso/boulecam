@@ -18,6 +18,8 @@ set(SOURCES
     src/usb/adb_manager.cpp
     src/usb/usbmuxd_client.cpp
     src/decoder/video_decoder.cpp
+    src/audio/audio_dsp_pipeline.cpp
+    src/audio/wasapi_monitor.cpp
 )
 
 add_executable(boulecam-desktop ${SOURCES})
@@ -30,4 +32,6 @@ target_link_libraries(boulecam-desktop PRIVATE
     wmcodecdspuuid
     d3d11
     dxgi
+    ole32
+    oleaut32
 )

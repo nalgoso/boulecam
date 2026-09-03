@@ -5,6 +5,8 @@
 #include "usb/adb_manager.h"
 #include "usb/usbmuxd_client.h"
 #include "decoder/video_decoder.h"
+#include "audio/audio_dsp_pipeline.h"
+#include "audio/wasapi_monitor.h"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -48,7 +50,12 @@ int main(int argc, char* argv[]) {
     DiscoveryBeacon discoveryBeacon(BOULECAM_DEFAULT_TCP_PORT, BOULECAM_DEFAULT_UDP_PORT);
     discoveryBeacon.Start();
 
+    AudioDspPipeline dspPipeline(48000);
+    WasapiMonitor wasapiMonitor;
+
     HttpControlBridge httpBridge(tcpReceiver);
+    httpBridge.SetAudioDspPipeline(&dspPipeline);
+    httpBridge.SetWasapiMonitor(&wasapiMonitor);
     httpBridge.Start(BOULECAM_DEFAULT_WS_PORT); // Port 8090 for Desktop App GUI
 
     // Multi-Device decoders and statistics
@@ -170,7 +177,11 @@ int main(int argc, char* argv[]) {
         },
         [&httpBridge](int deviceId, const BouleCamCameraState& state) {
             httpBridge.SetDeviceDimState(deviceId, state.dim_screen_active != 0);
-            httpBridge.SetDeviceTelemetry(deviceId, state.battery_level, state.device_temperature, state.available_lenses_mask, state.current_zoom, state.current_lens);
+            httpBridge.SetDeviceTelemetry(
+                deviceId, state.battery_level, state.device_temperature,
+                state.available_lenses_mask, state.current_zoom, state.current_lens,
+                state.mic_channels, state.mic_capsule, state.mic_beamforming != 0
+            );
         }
     );
 
@@ -179,9 +190,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    tcpReceiver.SetAudioCallback([&httpBridge](
+    tcpReceiver.SetAudioCallback([&httpBridge, &dspPipeline, &wasapiMonitor](
         int deviceId, const BouleCamAudioHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
-        httpBridge.PushAudioData(deviceId, payloadData, payloadSize);
+        
+        // Studio Audio DSP Processing (Beamforming, RNNoise, Gate, Compressor, Soft Limiter)
+        std::vector<uint8_t> processedPcm;
+        int outChannels = 1;
+        dspPipeline.Process(payloadData, payloadSize, header.channels, processedPcm, outChannels);
+
+        // 1. WASAPI Local Monitoring (Headphones / Speakers with zero latency)
+        wasapiMonitor.PushPcm(processedPcm.data(), static_cast<uint32_t>(processedPcm.size()), outChannels);
+
+        // 2. HTTP Streaming for OBS Studio / Web Clients
+        httpBridge.PushAudioData(deviceId, processedPcm.data(), static_cast<uint32_t>(processedPcm.size()));
+
+        // 3. Update Audio Meters for UI VU Meter
+        auto meters = dspPipeline.GetMeters();
+        httpBridge.UpdateAudioMeters(meters.prePeakDb, meters.preRmsDb, meters.postPeakDb, meters.postRmsDb);
     });
 
     std::cout << "\n[Ready] BouleCam Desktop Service running. Waiting for mobile camera feed..." << std::endl;

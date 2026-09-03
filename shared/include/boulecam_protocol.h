@@ -53,7 +53,10 @@ typedef enum BouleCamCameraAction {
     BOULECAM_ACTION_SET_MIC         = 8, // 0 = Mute/Disabled, 1 = Enabled
     BOULECAM_ACTION_REQUEST_KEYFRAME= 9, // Request IDR Sync Frame
     BOULECAM_ACTION_SET_DIM_SCREEN  = 10, // 0 = Normal brightness, 1 = Dim screen (Power saving)
-    BOULECAM_ACTION_SET_ZOOM        = 11 // float_param1 = zoom ratio (e.g. 1.0f to 10.0f)
+    BOULECAM_ACTION_SET_ZOOM        = 11, // float_param1 = zoom ratio (e.g. 1.0f to 10.0f)
+    BOULECAM_ACTION_SET_MIC_CAPSULE = 12, // 0 = Auto/Default, 1 = Bottom, 2 = Back/Camera, 3 = Front/Selfie
+    BOULECAM_ACTION_SET_MIC_STEREO  = 13, // 0 = Mono, 1 = Real Stereo
+    BOULECAM_ACTION_SET_MIC_BEAMFORMING = 14 // 0 = Off, 1 = On (Hardware Beamforming)
 } BouleCamCameraAction;
 
 /**
@@ -115,13 +118,13 @@ typedef struct BouleCamCameraCmd {
     uint32_t magic;             // BOULECAM_MAGIC (0x4243414D)
     uint8_t  packet_type;       // BOULECAM_PKT_CAMERA_CMD (0x30)
     uint8_t  action;            // BouleCamCameraAction
-    int32_t  int_param1;        // e.g. lens (0/1/2/3), torch (0/1), iso, ev, wb_mode, mic (0/1)
+    int32_t  int_param1;        // e.g. lens (0/1/2/3), torch (0/1), iso, ev, wb_mode, mic (0/1), mic_capsule, mic_stereo
     int64_t  long_param1;       // e.g. exposure_time_ns
     float    float_param1;      // e.g. focus_distance (0.0f..1.0f) or zoom_ratio (1.0f..10.0f)
 } BouleCamCameraCmd;
 
 /**
- * Camera Telemetry / State (Mobile -> Desktop) - 45 bytes
+ * Camera Telemetry / State (Mobile -> Desktop) - 48 bytes
  */
 typedef struct BouleCamCameraState {
     uint32_t magic;             // BOULECAM_MAGIC
@@ -133,12 +136,15 @@ typedef struct BouleCamCameraState {
     int32_t  current_ev;        // Current EV compensation
     uint8_t  current_wb;        // Current WB mode
     float    current_focus;     // Current focus distance
-    uint8_t  mic_enabled;       // Mic status
+    uint8_t  mic_enabled;       // Mic status (0 = muted, 1 = active)
     float    battery_level;     // 0.0 - 100.0 (battery percentage)
     uint8_t  dim_screen_active; // 0 = Screen normal, 1 = Screen dimmed
     float    device_temperature;// Device temperature in Celsius (e.g. 33.5f)
     uint8_t  available_lenses_mask; // Bitmask: 1=Back, 2=Front, 4=UltraWide, 8=Tele/Macro
     float    current_zoom;      // Current zoom ratio (1.0f - 10.0f)
+    uint8_t  mic_channels;      // 1 = Mono, 2 = Stereo
+    uint8_t  mic_capsule;       // 0 = Auto/Default, 1 = Bottom, 2 = Back, 3 = Front
+    uint8_t  mic_beamforming;   // 0 = Off, 1 = On
 } BouleCamCameraState;
 
 #pragma pack(pop)

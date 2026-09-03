@@ -661,6 +661,32 @@ function updateUIStatus(data) {
       }
     }
 
+    // Real Microphone Hardware Telemetry
+    const micChannels = (curDev.micChannels !== undefined) ? curDev.micChannels : (data.micChannels || 1);
+    const micCapsule = (curDev.micCapsule !== undefined) ? curDev.micCapsule : (data.micCapsule || 0);
+    const micBeamforming = (curDev.micBeamforming !== undefined) ? curDev.micBeamforming : (data.micBeamforming || false);
+
+    const audioCapsuleBadge = document.getElementById('audio-capsule-badge');
+    if (audioCapsuleBadge) {
+      const chStr = micChannels === 2 ? 'Estéreo' : 'Mono';
+      const capStr = micCapsule === 2 ? 'Cámara' : (micCapsule === 3 ? 'Frontal' : 'Inferior');
+      audioCapsuleBadge.textContent = `${chStr} (${capStr})`;
+    }
+
+    document.querySelectorAll('.capsule-btn').forEach(btn => {
+      const capId = parseInt(btn.getAttribute('data-capsule'));
+      btn.classList.toggle('active', capId === micCapsule);
+    });
+
+    const chkStereo = document.getElementById('chk-mic-stereo');
+    if (chkStereo && !chkStereo.matches(':focus')) {
+      chkStereo.checked = (micChannels === 2);
+    }
+    const chkBeamforming = document.getElementById('chk-beamforming');
+    if (chkBeamforming && !chkBeamforming.matches(':focus')) {
+      chkBeamforming.checked = micBeamforming;
+    }
+
     // Dynamic Multi-Camera Lens Visibility based on hardware mask
     const lensesMask = curDev.lensesMask || data.lensesMask || 3;
     const btnLensUltra = document.getElementById('btn-lens-ultra');
@@ -1053,8 +1079,197 @@ function setupEvents() {
   // Initialize modal dialogs
   setupModals();
 
+  // Initialize Professional Audio & DSP Suite
+  setupAudioSuite();
+
   // Initial load
   applyActiveConfigToUI(false);
+}
+
+// =========================================================
+// Studio Audio & High Precision VU Meter Logic
+// =========================================================
+
+function dbToPercent(db) {
+  if (db <= -60.0) return 0;
+  if (db >= 0.0) return 100;
+  return Math.max(0, Math.min(100, ((db + 60.0) / 60.0) * 100));
+}
+
+let isAudioMeterPolling = false;
+
+async function pollAudioMeter() {
+  if (isAudioMeterPolling) return;
+  isAudioMeterPolling = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/audio_meter`);
+    if (res.ok) {
+      const m = await res.json();
+      const meterPreDb = document.getElementById('meter-pre-db');
+      const vuPreRms = document.getElementById('vu-pre-rms');
+      const vuPrePeak = document.getElementById('vu-pre-peak');
+      const vuPreClip = document.getElementById('vu-pre-clip');
+
+      const meterPostDb = document.getElementById('meter-post-db');
+      const vuPostRms = document.getElementById('vu-post-rms');
+      const vuPostPeak = document.getElementById('vu-post-peak');
+      const vuPostClip = document.getElementById('vu-post-clip');
+
+      if (meterPreDb) meterPreDb.textContent = m.prePeakDb > -60 ? `${m.prePeakDb.toFixed(1)} dB` : '-∞ dB';
+      if (vuPreRms) vuPreRms.style.width = `${dbToPercent(m.preRmsDb)}%`;
+      if (vuPrePeak) vuPrePeak.style.left = `${dbToPercent(m.prePeakDb)}%`;
+      if (vuPreClip) vuPreClip.classList.toggle('active', m.prePeakDb >= -0.5);
+
+      if (meterPostDb) meterPostDb.textContent = m.postPeakDb > -60 ? `${m.postPeakDb.toFixed(1)} dB` : '-∞ dB';
+      if (vuPostRms) vuPostRms.style.width = `${dbToPercent(m.postRmsDb)}%`;
+      if (vuPostPeak) vuPostPeak.style.left = `${dbToPercent(m.postPeakDb)}%`;
+      if (vuPostClip) vuPostClip.classList.toggle('active', m.postPeakDb >= -0.5);
+    }
+  } catch (ignored) {
+  } finally {
+    isAudioMeterPolling = false;
+  }
+}
+
+async function sendAudioConfig(params) {
+  try {
+    await fetch(`${API_BASE}/api/audio_config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+  } catch (e) {}
+}
+
+function setupAudioSuite() {
+  // 1. Microphone Capsule Selection (Bottom, Back, Front)
+  document.querySelectorAll('.capsule-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const capsule = parseInt(btn.getAttribute('data-capsule'));
+      document.querySelectorAll('.capsule-btn').forEach(b => b.classList.toggle('active', b === btn));
+      await sendCommand(12, capsule);
+      showToast(`🎙️ Cápsula de micrófono: ${btn.textContent.trim()}`);
+    });
+  });
+
+  // 2. Real Stereo Toggle
+  const chkStereo = document.getElementById('chk-mic-stereo');
+  if (chkStereo) {
+    chkStereo.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      await sendCommand(13, enabled ? 1 : 0);
+      showToast(enabled ? '🎧 Modo Estéreo Real activado' : '🎙️ Modo Mono activado');
+    });
+  }
+
+  // 3. Hardware Beamforming Toggle
+  const chkBeamforming = document.getElementById('chk-beamforming');
+  if (chkBeamforming) {
+    chkBeamforming.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      await sendCommand(14, enabled ? 1 : 0);
+      await sendAudioConfig({ beamformingEnabled: enabled });
+      showToast(enabled ? '🎯 Beamforming (Doble Mic) activado' : '🎯 Beamforming desactivado');
+    });
+  }
+
+  // 4. RNNoise AI Denoiser
+  const chkRnnoise = document.getElementById('chk-rnnoise');
+  const badgeRnnoise = document.getElementById('badge-rnnoise');
+  if (chkRnnoise) {
+    chkRnnoise.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      if (badgeRnnoise) badgeRnnoise.classList.toggle('active', enabled);
+      await sendAudioConfig({ rnnoiseEnabled: enabled });
+      showToast(enabled ? '✨ RNNoise (IA) activado' : 'Bypass RNNoise');
+    });
+  }
+
+  // 5. Noise Gate
+  const chkGate = document.getElementById('chk-gate');
+  const sliderGateThresh = document.getElementById('slider-gate-thresh');
+  const valGateThresh = document.getElementById('val-gate-thresh');
+
+  const updateGate = async () => {
+    const enabled = chkGate ? chkGate.checked : true;
+    const thresh = sliderGateThresh ? parseFloat(sliderGateThresh.value) : -45.0;
+    if (valGateThresh) valGateThresh.textContent = `${thresh} dB`;
+    await sendAudioConfig({ gateEnabled: enabled, gateThresholdDb: thresh });
+  };
+
+  if (chkGate) chkGate.addEventListener('change', updateGate);
+  if (sliderGateThresh) sliderGateThresh.addEventListener('input', updateGate);
+
+  // 6. Compressor & Limiter
+  const chkComp = document.getElementById('chk-comp');
+  const sliderCompThresh = document.getElementById('slider-comp-thresh');
+  const valCompThresh = document.getElementById('val-comp-thresh');
+  const sliderCompRatio = document.getElementById('slider-comp-ratio');
+  const valCompRatio = document.getElementById('val-comp-ratio');
+  const sliderCompGain = document.getElementById('slider-comp-gain');
+  const valCompGain = document.getElementById('val-comp-gain');
+
+  const updateComp = async () => {
+    const enabled = chkComp ? chkComp.checked : true;
+    const thresh = sliderCompThresh ? parseFloat(sliderCompThresh.value) : -20.0;
+    const ratio = sliderCompRatio ? parseFloat(sliderCompRatio.value) : 3.0;
+    const gain = sliderCompGain ? parseFloat(sliderCompGain.value) : 3.0;
+
+    if (valCompThresh) valCompThresh.textContent = `${thresh} dB`;
+    if (valCompRatio) valCompRatio.textContent = `${ratio.toFixed(1)}:1`;
+    if (valCompGain) valCompGain.textContent = `+${gain} dB`;
+
+    await sendAudioConfig({
+      compressorEnabled: enabled,
+      compThresholdDb: thresh,
+      compRatio: ratio,
+      compMakeupDb: gain,
+      limiterEnabled: true
+    });
+  };
+
+  if (chkComp) chkComp.addEventListener('change', updateComp);
+  if (sliderCompThresh) sliderCompThresh.addEventListener('input', updateComp);
+  if (sliderCompRatio) sliderCompRatio.addEventListener('input', updateComp);
+  if (sliderCompGain) sliderCompGain.addEventListener('input', updateComp);
+
+  // 7. Local WASAPI Monitor (Headphones)
+  const chkMonitor = document.getElementById('chk-monitor-enable');
+  const sliderMonitorVol = document.getElementById('slider-monitor-vol');
+  const valMonitorVol = document.getElementById('val-monitor-vol');
+  const btnMonitorMute = document.getElementById('btn-monitor-mute');
+  let isMonitorMuted = false;
+
+  const updateMonitor = async () => {
+    const enabled = chkMonitor ? chkMonitor.checked : false;
+    const vol = sliderMonitorVol ? parseInt(sliderMonitorVol.value) / 100.0 : 0.8;
+    if (valMonitorVol) valMonitorVol.textContent = `${Math.round(vol * 100)}%`;
+
+    await sendAudioConfig({
+      monitorEnabled: enabled,
+      monitorVolume: vol,
+      monitorMute: isMonitorMuted
+    });
+  };
+
+  if (chkMonitor) chkMonitor.addEventListener('change', async (e) => {
+    await updateMonitor();
+    showToast(e.target.checked ? '🎧 Monitoreo local en auriculares activo' : '🎧 Monitoreo local desactivado');
+  });
+
+  if (sliderMonitorVol) sliderMonitorVol.addEventListener('input', updateMonitor);
+
+  if (btnMonitorMute) {
+    btnMonitorMute.addEventListener('click', async () => {
+      isMonitorMuted = !isMonitorMuted;
+      btnMonitorMute.classList.toggle('muted', isMonitorMuted);
+      btnMonitorMute.textContent = isMonitorMuted ? '🔇' : '🔊';
+      await sendAudioConfig({ monitorMute: isMonitorMuted });
+    });
+  }
+
+  // High performance VU meter loop (every 50ms)
+  setInterval(pollAudioMeter, 50);
 }
 
 // Start polling

@@ -537,6 +537,9 @@ class MainActivity : AppCompatActivity() {
                         val mask = cameraPipeline?.getLensesMask() ?: 3
                         val zoom = cameraPipeline?.getCurrentZoom() ?: 1.0f
                         val lens = cameraPipeline?.getCurrentLens() ?: 0
+                        val channels = audioPipeline?.getChannels() ?: 1
+                        val capsule = audioPipeline?.getCapsule() ?: 0
+                        val beamforming = audioPipeline?.isBeamformingActive() ?: false
                         sender?.sendTelemetry(
                             batteryLevel = bat,
                             temperatureC = temp,
@@ -544,7 +547,10 @@ class MainActivity : AppCompatActivity() {
                             currentZoom = zoom,
                             currentLens = lens,
                             isDimmed = isDimScreenActive,
-                            isTorchOn = cameraPipeline?.isTorchActive() ?: false
+                            isTorchOn = cameraPipeline?.isTorchActive() ?: false,
+                            micChannels = channels,
+                            micCapsule = capsule,
+                            micBeamforming = beamforming
                         )
                     }
                 }
@@ -636,9 +642,9 @@ class MainActivity : AppCompatActivity() {
         encoder?.setSuspended(true) // Suspended until PC connection is established!
 
         // 3.5. Prepare Ultra Low Latency PCM Audio Pipeline (Starts only when connected)
-        audioPipeline = AudioCapturePipeline(sampleRate = 48000) { pcmData, size ->
+        audioPipeline = AudioCapturePipeline(this, sampleRate = 48000) { pcmData, size, channels ->
             if (isMicEnabled && sender?.isConnected() == true) {
-                sender?.sendAudio(pcmData, size)
+                sender?.sendAudio(pcmData, size, channels)
             }
         }
 
@@ -743,6 +749,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 11 -> { // BOULECAM_ACTION_SET_ZOOM (floatParam1 = zoom ratio)
                     cameraPipeline?.setZoom(cmd.floatParam1)
+                }
+                12 -> { // BOULECAM_ACTION_SET_MIC_CAPSULE (0 = Auto, 1 = Bottom, 2 = Back, 3 = Front)
+                    audioPipeline?.setCapsule(cmd.intParam1)
+                }
+                13 -> { // BOULECAM_ACTION_SET_MIC_STEREO (0 = Mono, 1 = Stereo)
+                    audioPipeline?.setStereo(cmd.intParam1 != 0)
+                }
+                14 -> { // BOULECAM_ACTION_SET_MIC_BEAMFORMING (0 = Off, 1 = On)
+                    audioPipeline?.setBeamforming(cmd.intParam1 != 0)
                 }
             }
         }
