@@ -21,6 +21,7 @@ class StreamSender(
     @Volatile private var host: String = "127.0.0.1",
     @Volatile private var port: Int = 8088,
     private val deviceName: String = "BouleCam Mobile",
+    private val deviceId: String = "",
     private val onConnectionStateChanged: (Boolean) -> Unit,
     private val onCommandReceived: ((CameraCommand) -> Unit)? = null
 ) {
@@ -224,7 +225,7 @@ class StreamSender(
         val `in` = inputStream ?: return false
 
         try {
-            // Build Handshake Request (Exact 88 bytes: 4+1+1+1+1+4+4+4+4+64 = 88)
+            // Build Handshake Request (Exact 88 bytes: 4+1+1+1+1+4+4+4+4+48+16 = 88)
             val hsBuffer = ByteBuffer.allocate(88).order(ByteOrder.LITTLE_ENDIAN)
             hsBuffer.putInt(0x4243414D) // Magic "BCAM" (4)
             hsBuffer.put(0x01.toByte())  // BOULECAM_PKT_HANDSHAKE_REQ (1)
@@ -237,9 +238,14 @@ class StreamSender(
             hsBuffer.putInt(8000000)     // Bitrate (8 Mbps) (4)
 
             val nameBytes = deviceName.toByteArray(Charsets.UTF_8)
-            val devBytes = ByteArray(64)
-            System.arraycopy(nameBytes, 0, devBytes, 0, minOf(nameBytes.size, 63))
-            hsBuffer.put(devBytes) // (64)
+            val devBytes = ByteArray(48)
+            System.arraycopy(nameBytes, 0, devBytes, 0, minOf(nameBytes.size, 47))
+            hsBuffer.put(devBytes) // (48)
+
+            val idBytes = deviceId.toByteArray(Charsets.UTF_8)
+            val idArr = ByteArray(16)
+            System.arraycopy(idBytes, 0, idArr, 0, minOf(idBytes.size, 15))
+            hsBuffer.put(idArr) // (16)
 
             out.write(hsBuffer.array())
             out.flush()

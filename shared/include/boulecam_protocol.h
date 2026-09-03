@@ -68,7 +68,8 @@ typedef struct BouleCamHandshakeReq {
     uint32_t height;            // e.g. 1080
     uint32_t target_fps;        // e.g. 60
     uint32_t target_bitrate;    // in bps, e.g. 8000000 (8 Mbps)
-    char     device_name[64];   // e.g. "Samsung Galaxy S23", "Pixel 8"
+    char     device_name[48];   // e.g. "Samsung Galaxy S23", "Pixel 8"
+    char     device_id[16];     // Hardware unique ID (e.g. Android ID "9774d56d682e549c")
 } BouleCamHandshakeReq;
 
 /**

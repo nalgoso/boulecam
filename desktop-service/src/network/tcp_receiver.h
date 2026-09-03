@@ -43,9 +43,21 @@ using AudioReceivedCallback = std::function<void(
     uint32_t payloadSize
 )>;
 
+using ClientDisconnectedCallback = std::function<void(
+    int deviceId
+)>;
+
+struct LockedCameraSlot {
+    int camId = 0;
+    std::string uniqueId = "";
+    std::string deviceName = "";
+    bool isLocked = false;
+};
+
 struct ConnectedClient {
     int id;
     std::string deviceName;
+    std::string uniqueId;
     SOCKET socket;
     std::string ip;
     uint16_t port;
@@ -78,17 +90,29 @@ public:
     bool SwapClientIds(int camA, int camB);
     bool ReassignClientId(int fromId, int toId);
 
+    // Lock camera slot to a specific device unique ID (URL reservation)
+    bool LockCameraSlot(int camId, bool lock, const std::string& uniqueId = "", const std::string& devName = "");
+    bool IsCameraSlotLocked(int camId);
+    std::vector<LockedCameraSlot> GetLockedSlots();
+    LockedCameraSlot GetSlotLock(int camId);
+
     void SetAudioCallback(AudioReceivedCallback audioCb) { m_audioCallback = audioCb; }
+    void SetDisconnectedCallback(ClientDisconnectedCallback discCb) { m_disconnectCallback = discCb; }
 
     std::vector<ConnectedClient> GetConnectedClients();
     double GetClientRttMs(int deviceId);
     std::string GetClientIp(int deviceId);
+    std::string GetClientUniqueId(int deviceId);
 
 private:
     void ListenThreadWorker();
     void ClientThreadWorker(SOCKET clientSocket, std::string clientIp, uint16_t clientPort);
 
     bool ReceiveExact(SOCKET sock, uint8_t* destination, size_t bytesToRead);
+
+    void LoadLockedSlots();
+    void SaveLockedSlots();
+    std::string GetLocksFilePath();
 
     uint16_t m_port;
     SOCKET m_listenSocket;
@@ -98,12 +122,14 @@ private:
     std::mutex m_clientsMutex;
     std::map<int, ConnectedClient> m_clients;
     std::set<std::string> m_ignoredClients;
+    std::map<int, LockedCameraSlot> m_lockedSlots;
 
     std::thread m_listenThread;
     FrameReceivedCallback m_frameCallback;
     HandshakeReceivedCallback m_handshakeCallback;
     CameraStateReceivedCallback m_cameraStateCallback;
     AudioReceivedCallback m_audioCallback;
+    ClientDisconnectedCallback m_disconnectCallback;
 };
 
 } // namespace boulecam

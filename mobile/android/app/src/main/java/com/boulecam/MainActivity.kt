@@ -510,14 +510,32 @@ class MainActivity : AppCompatActivity() {
         return "$manufacturer ${android.os.Build.MODEL}"
     }
 
+    private fun getUniqueDeviceId(): String {
+        try {
+            val androidId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+            if (!androidId.isNullOrBlank()) {
+                return androidId.lowercase().take(16)
+            }
+        } catch (e: Exception) {}
+        val prefs = getSharedPreferences("boulecam_prefs", android.content.Context.MODE_PRIVATE)
+        var savedId = prefs.getString("unique_device_id", null)
+        if (savedId.isNullOrBlank()) {
+            savedId = java.util.UUID.randomUUID().toString().replace("-", "").take(16).lowercase()
+            prefs.edit().putString("unique_device_id", savedId).apply()
+        }
+        return savedId
+    }
+
     private fun setupStreamingPipeline() {
         val devName = getFriendlyDeviceName()
+        val devId = getUniqueDeviceId()
 
         // 1. Initialize Network Streamer with Bidirectional Command Handler
         sender = StreamSender(
             host = "127.0.0.1", 
             port = 8088,
             deviceName = devName,
+            deviceId = devId,
             onConnectionStateChanged = { connected ->
                 runOnUiThread {
                     if (connected) {

@@ -277,6 +277,7 @@ function applyVideoTransform() {
 function updateObsBox(camId) {
   const inputObsUrl = document.getElementById('input-obs-url');
   const obsCamBadge = document.getElementById('obs-cam-badge');
+  const obsLockBadge = document.getElementById('obs-lock-badge');
   if (inputObsUrl) {
     // Clean, permanent URL: automatically syncs mirror, rotation, mic and lens live in real-time
     inputObsUrl.value = `http://127.0.0.1:8090/obs/${camId}`;
@@ -284,6 +285,20 @@ function updateObsBox(camId) {
   if (obsCamBadge) {
     const customName = customCamNames[camId];
     obsCamBadge.textContent = customName ? `Cam ${camId} (${customName})` : `Cam ${camId}`;
+  }
+  if (obsLockBadge) {
+    const dev = (lastDevicesList || []).find(d => d.id === camId);
+    if (dev && dev.isLocked) {
+      obsLockBadge.textContent = '🔒 Bloqueada';
+      obsLockBadge.style.color = '#fef08a';
+      obsLockBadge.style.borderColor = 'rgba(234, 179, 8, 0.4)';
+      obsLockBadge.style.background = 'rgba(234, 179, 8, 0.15)';
+    } else {
+      obsLockBadge.textContent = '🔓 Dinámica';
+      obsLockBadge.style.color = 'var(--text-muted)';
+      obsLockBadge.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+      obsLockBadge.style.background = 'transparent';
+    }
   }
 }
 
@@ -346,8 +361,15 @@ function setupModals() {
         }
       }
 
+      // Update lock state if checkbox exists
+      const editCamLock = document.getElementById('edit-cam-lock');
+      const isLockedCheck = editCamLock ? editCamLock.checked : false;
+      try {
+        await fetch(`${API_BASE}/api/lock_cam?cam=${newNum}&lock=${isLockedCheck ? 1 : 0}`, { method: 'POST' });
+      } catch (e) {}
+
       closeEditModal();
-      showToast(`✓ Señal guardada como Cam ${newNum}`);
+      showToast(`✓ Señal guardada como Cam ${newNum}${isLockedCheck ? ' (Bloqueada 🔒)' : ''}`);
       pollStatus();
     });
   }
@@ -403,11 +425,20 @@ function openEditModal(camId) {
   const modalEdit = document.getElementById('modal-edit-cam');
   const editCamNumber = document.getElementById('edit-cam-number');
   const editCamName = document.getElementById('edit-cam-name');
+  const editCamDeviceId = document.getElementById('edit-cam-device-id');
+  const editCamLock = document.getElementById('edit-cam-lock');
   if (!modalEdit || !editCamNumber || !editCamName) return;
 
   currentEditTargetId = camId;
   const dev = (lastDevicesList || []).find(d => d.id === camId);
   const activeDevices = (lastDevicesList || []).filter(d => !unlinkedCamIds.has(d.id));
+
+  if (editCamDeviceId) {
+    editCamDeviceId.textContent = dev?.uniqueId ? dev.uniqueId : 'Detectando por conexión...';
+  }
+  if (editCamLock) {
+    editCamLock.checked = !!dev?.isLocked;
+  }
 
   // Build options for select
   let selectHtml = '';
@@ -465,14 +496,20 @@ function renderDeviceTabs(devices, activeId) {
 
   const html = availableDevices.map(d => {
     const isActive = d.id === activeId;
+    const isLocked = !!d.isLocked;
+    const isOffline = d.connected === false;
     const isVert = d.isVertical ? ' (Vertical)' : '';
     const name = customCamNames[d.id] || d.name;
+    const offlineSuffix = isOffline ? ' (Desconectado)' : '';
+    const lockBadge = isLocked ? ' 🔒' : '';
+
     return `
-      <div class="cam-tab ${isActive ? 'active' : ''}" data-cam-id="${d.id}" title="Seleccionar Cam ${d.id} (${name})">
+      <div class="cam-tab ${isActive ? 'active' : ''} ${isLocked ? 'locked' : ''} ${isOffline ? 'offline' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal Bloqueada: URL fija a este dispositivo' : 'Señal Dinámica'}">
         <span class="cam-tab-dot"></span>
-        <span class="cam-tab-name">📹 Cam ${d.id}: ${name}${isVert}</span>
+        <span class="cam-tab-name">📹 Cam ${d.id}: ${name}${offlineSuffix}${isVert}${lockBadge}</span>
         <div class="cam-tab-actions">
-          <button class="cam-tab-edit-btn" data-cam-id="${d.id}" title="Renombrar o reasignar señal (1, 2, 3...)">✏️</button>
+          <button class="cam-tab-lock-btn ${isLocked ? 'locked' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal bloqueada permanentemente a este dispositivo. Clic para desbloquear' : 'Bloquear permanentemente esta URL a este dispositivo'}">${isLocked ? '🔒' : '🔓'}</button>
+          <button class="cam-tab-edit-btn" data-cam-id="${d.id}" title="Configurar y renombrar señal (1, 2, 3...)">✏️</button>
           <button class="cam-tab-close-btn" data-cam-id="${d.id}" title="Desvincular este dispositivo">✕</button>
         </div>
       </div>
@@ -484,11 +521,30 @@ function renderDeviceTabs(devices, activeId) {
   const tabs = cameraSelectorBar.querySelectorAll('.cam-tab');
   tabs.forEach(tab => {
     tab.addEventListener('click', (e) => {
-      if (e.target.closest('.cam-tab-edit-btn') || e.target.closest('.cam-tab-close-btn')) {
+      if (e.target.closest('.cam-tab-edit-btn') || e.target.closest('.cam-tab-close-btn') || e.target.closest('.cam-tab-lock-btn')) {
         return;
       }
       const id = parseInt(tab.getAttribute('data-cam-id'));
       selectCamera(id);
+    });
+  });
+
+  const lockBtns = cameraSelectorBar.querySelectorAll('.cam-tab-lock-btn');
+  lockBtns.forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.getAttribute('data-cam-id'));
+      const dev = (lastDevicesList || []).find(d => d.id === id);
+      const newLockState = !dev?.isLocked;
+      const devName = customCamNames[id] || dev?.name || `Cam ${id}`;
+
+      try {
+        await fetch(`${API_BASE}/api/lock_cam?cam=${id}&lock=${newLockState ? 1 : 0}`, { method: 'POST' });
+        showToast(newLockState ? `🔒 Cam ${id} bloqueada permanentemente a ${devName}` : `🔓 Cam ${id} desbloqueada (dinámica)`);
+        pollStatus();
+      } catch (err) {
+        showToast('Error al actualizar bloqueo');
+      }
     });
   });
 
@@ -538,10 +594,29 @@ let lastActiveDeviceId = null;
 
 function updateUIStatus(data) {
   const availableDevices = (data.devices || []).filter(d => !unlinkedCamIds.has(d.id));
-  const hasConnected = availableDevices.length > 0;
-  isConnected = hasConnected && data.connected;
-
+  const hasConnected = availableDevices.some(d => d.connected !== false);
   const curDev = availableDevices.find(d => d.id === (data.activeDeviceId || activeCamId)) || availableDevices[0];
+  const curDevIsOnline = curDev && (curDev.connected !== false);
+  isConnected = hasConnected && curDevIsOnline && data.connected;
+
+  if (curDev && !curDevIsOnline && curDev.isLocked) {
+    statusDot.classList.remove('connected');
+    const devName = customCamNames[curDev.id] || curDev.name || `Cam ${curDev.id}`;
+    statusText.textContent = `Cam ${curDev.id} reservada (Esperando a ${devName} 🔒)`;
+    statusText.style.color = '#eab308';
+    liveStreamImg.style.display = 'none';
+    placeholderBox.style.display = 'flex';
+    const h3 = placeholderBox.querySelector('h3');
+    const p = placeholderBox.querySelector('p');
+    if (h3) h3.textContent = `Cam ${curDev.id} Bloqueada y Reservada`;
+    if (p) p.textContent = `Esperando reconexión de ${devName}. Su URL (/obs/${curDev.id}) está protegida y no se asignará a otro dispositivo.`;
+    if (badgeDevice) badgeDevice.textContent = `${devName} (En espera 🔒)`;
+    if (badgeFps) badgeFps.textContent = `-- FPS`;
+    if (badgeLatency) badgeLatency.textContent = `-- ms`;
+    if (badgeBitrate) badgeBitrate.textContent = `0.0 Mbps`;
+    renderDeviceTabs(data.devices, activeCamId);
+    return;
+  }
 
   if (isConnected && curDev) {
     statusDot.classList.add('connected');

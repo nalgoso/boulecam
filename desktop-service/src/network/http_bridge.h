@@ -21,7 +21,10 @@ struct DeviceInfo {
     int id = 0;
     std::string name = "Móvil";
     std::string ip = "";
+    std::string uniqueId = "";
     bool isUsb = false;
+    bool isLocked = false;
+    bool connected = true;
     uint32_t width = 0;
     uint32_t height = 0;
     bool isVertical = false;
@@ -58,13 +61,14 @@ public:
 
     void UpdateStats(int deviceId, float fps, float latencyMs, uint32_t bitrateKbps);
     void SetUsbStatus(bool connected);
-    void SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip = "", bool isUsb = false);
+    void SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip = "", bool isUsb = false, const std::string& uniqueId = "");
     void SetDeviceDimState(int deviceId, bool isDimmed);
     void RemoveDevice(int deviceId);
     bool DisconnectDevice(int deviceId);
     bool SwapDevices(int camA, int camB);
     bool ReassignDevice(int fromId, int toId);
     bool RenameDevice(int camId, const std::string& newName);
+    bool LockDevice(int camId, bool lock);
 
     using RescanCallback = std::function<void()>;
     void SetRescanCallback(RescanCallback cb) { m_rescanCallback = cb; }

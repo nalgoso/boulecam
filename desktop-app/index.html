@@ -195,7 +195,10 @@
         <div class="obs-card glass">
           <div class="obs-card-header">
             <span style="font-size:0.8rem; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px;">📡 Señal para OBS Studio</span>
-            <span class="badge-tag" id="obs-cam-badge" style="color:var(--accent-cyan);">Cam 1</span>
+            <div style="display:flex; align-items:center; gap:6px; margin-left:auto;">
+              <span class="badge-tag" id="obs-lock-badge" style="color:var(--text-muted); font-size:0.75rem;">🔓 Dinámica</span>
+              <span class="badge-tag" id="obs-cam-badge" style="color:var(--accent-cyan);">Cam 1</span>
+            </div>
           </div>
           <div class="obs-input-row">
             <input type="text" id="input-obs-url" readonly value="http://127.0.0.1:8090/obs/1" spellcheck="false" />
@@ -233,6 +236,23 @@
         <div class="modal-field" style="margin-top:14px;">
           <label for="edit-cam-name">Nombre descriptivo:</label>
           <input type="text" id="edit-cam-name" class="modal-input" placeholder="Ej: Púlpito, Piano, General..." maxlength="30" />
+        </div>
+
+        <div class="modal-field" style="margin-top:14px;">
+          <label>Identificador Único del Dispositivo (Hardware):</label>
+          <div class="modal-device-id" id="edit-cam-device-id">Detectando...</div>
+        </div>
+
+        <div class="modal-field" style="margin-top:14px;">
+          <label class="modal-checkbox-row">
+            <input type="checkbox" id="edit-cam-lock" />
+            <div>
+              <div style="font-weight:600; font-size:0.85rem; color:#fff;">🔒 Bloquear permanentemente esta URL a este teléfono</div>
+              <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">
+                Garantiza que la URL nunca se asignará a otro dispositivo y este teléfono siempre recuperará su señal fija al reconectarse.
+              </div>
+            </div>
+          </label>
         </div>
       </div>
       <div class="modal-footer">

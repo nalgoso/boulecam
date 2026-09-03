@@ -238,13 +238,16 @@ void HttpControlBridge::SetUsbStatus(bool connected) {
     m_status.usbConnected = connected;
 }
 
-void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip, bool isUsb) {
+void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip, bool isUsb, const std::string& uniqueId) {
     std::lock_guard<std::mutex> lock(m_statusMutex);
     DeviceInfo& dev = m_devices[deviceId];
     dev.id = deviceId;
     dev.name = name;
     dev.ip = ip;
     dev.isUsb = isUsb;
+    dev.uniqueId = uniqueId;
+    dev.connected = true;
+    dev.isLocked = m_receiver.IsCameraSlotLocked(deviceId);
     if (width > 0) dev.width = width;
     if (height > 0) dev.height = height;
 
@@ -257,6 +260,15 @@ void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name,
         if (width > 0) m_status.width = width;
         if (height > 0) m_status.height = height;
     }
+}
+
+bool HttpControlBridge::LockDevice(int camId, bool lock) {
+    bool ok = m_receiver.LockCameraSlot(camId, lock);
+    std::lock_guard<std::mutex> lockGuard(m_statusMutex);
+    if (m_devices.find(camId) != m_devices.end()) {
+        m_devices[camId].isLocked = lock;
+    }
+    return ok;
 }
 
 void HttpControlBridge::SetDeviceDimState(int deviceId, bool isDimmed) {
@@ -697,7 +709,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             std::lock_guard<std::mutex> lock(m_frameMutex);
             if (m_deviceBmpFrames.find(requestedCamId) != m_deviceBmpFrames.end()) {
                 frameData = m_deviceBmpFrames[requestedCamId];
-            } else if (!m_latestBmpFrame.empty()) {
+            } else if (requestedCamId == 0 && !m_latestBmpFrame.empty()) {
                 frameData = m_latestBmpFrame;
             }
         }
@@ -755,14 +767,44 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             }
             json << "],\"devices\":[";
 
+            // Aggregate all devices: connected and offline locked slots
+            std::map<int, DeviceInfo> allDevs = m_devices;
+            for (auto& pair : allDevs) {
+                pair.second.isLocked = m_receiver.IsCameraSlotLocked(pair.first);
+                if (pair.second.uniqueId.empty()) {
+                    pair.second.uniqueId = m_receiver.GetClientUniqueId(pair.first);
+                }
+            }
+
+            // Include offline locked devices so OBS and GUI know their slot is permanently reserved
+            auto lockedSlots = m_receiver.GetLockedSlots();
+            for (const auto& lk : lockedSlots) {
+                if (lk.isLocked && allDevs.find(lk.camId) == allDevs.end()) {
+                    DeviceInfo offlineDev;
+                    offlineDev.id = lk.camId;
+                    offlineDev.name = lk.deviceName.empty() ? ("Cam " + std::to_string(lk.camId)) : lk.deviceName;
+                    offlineDev.ip = "";
+                    offlineDev.uniqueId = lk.uniqueId;
+                    offlineDev.isUsb = false;
+                    offlineDev.isLocked = true;
+                    offlineDev.connected = false;
+                    offlineDev.width = 0;
+                    offlineDev.height = 0;
+                    allDevs[lk.camId] = offlineDev;
+                }
+            }
+
             size_t idx = 0;
-            for (const auto& pair : m_devices) {
+            for (const auto& pair : allDevs) {
                 const auto& d = pair.second;
                 json << "{"
                      << "\"id\":" << d.id << ","
                      << "\"name\":\"" << d.name << "\","
                      << "\"ip\":\"" << d.ip << "\","
+                     << "\"uniqueId\":\"" << d.uniqueId << "\","
                      << "\"isUsb\":" << (d.isUsb ? "true" : "false") << ","
+                     << "\"isLocked\":" << (d.isLocked ? "true" : "false") << ","
+                     << "\"connected\":" << (d.connected ? "true" : "false") << ","
                      << "\"width\":" << d.width << ","
                      << "\"height\":" << d.height << ","
                      << "\"isVertical\":" << (d.isVertical ? "true" : "false") << ","
@@ -772,7 +814,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                      << "\"bitrateKbps\":" << d.bitrateKbps << ","
                      << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
                      << "}";
-                if (++idx < m_devices.size()) json << ",";
+                if (++idx < allDevs.size()) json << ",";
             }
             json << "]}";
         }
@@ -892,6 +934,33 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         }
 
         std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 3.35 Lock / Unlock Camera API (/api/lock_cam?cam=X&lock=1)
+    if (firstLine.find("/api/lock_cam") != std::string::npos) {
+        int camId = (requestedCamId > 0) ? requestedCamId : 1;
+        int lockVal = 1;
+        size_t pLock = requestStr.find("lock=");
+        if (pLock != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", pLock + 5);
+            std::string valStr = requestStr.substr(pLock + 5, endP - (pLock + 5));
+            try { lockVal = std::stoi(valStr); } catch (...) {}
+        }
+
+        bool ok = LockDevice(camId, lockVal != 0);
+
+        std::string body = ok ? "{\"status\":\"ok\",\"cam\":" + std::to_string(camId) + ",\"locked\":" + std::string(lockVal != 0 ? "true" : "false") + "}" : "{\"status\":\"error\"}";
         std::ostringstream oss;
         oss << "HTTP/1.1 200 OK\r\n"
             << "Content-Type: application/json\r\n"
