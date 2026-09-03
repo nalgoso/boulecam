@@ -8,6 +8,32 @@
 
 namespace boulecam {
 
+static std::string UrlDecode(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%') {
+            if (i + 2 < in.size()) {
+                int hexVal = 0;
+                std::istringstream hexStream(in.substr(i + 1, 2));
+                if (hexStream >> std::hex >> hexVal) {
+                    out.push_back(static_cast<char>(hexVal));
+                    i += 2;
+                } else {
+                    out.push_back(in[i]);
+                }
+            } else {
+                out.push_back(in[i]);
+            }
+        } else if (in[i] == '+') {
+            out.push_back(' ');
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
 static void ConvertNV12ToBMP(const uint8_t* nv12, uint32_t width, uint32_t height, std::vector<uint8_t>& bmpOut, uint16_t rotation = 0, uint32_t dataSize = 0) {
     // If rotation is 90 or 270 (Vertical), swap width and height!
     bool isVertical = (rotation == 90 || rotation == 270);
@@ -212,20 +238,24 @@ void HttpControlBridge::SetUsbStatus(bool connected) {
     m_status.usbConnected = connected;
 }
 
-void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height) {
+void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip, bool isUsb) {
     std::lock_guard<std::mutex> lock(m_statusMutex);
     DeviceInfo& dev = m_devices[deviceId];
     dev.id = deviceId;
     dev.name = name;
-    dev.width = width;
-    dev.height = height;
+    dev.ip = ip;
+    dev.isUsb = isUsb;
+    if (width > 0) dev.width = width;
+    if (height > 0) dev.height = height;
 
     if (deviceId == m_activeDeviceId.load() || !m_status.connected) {
         m_status.connected = true;
         m_status.activeDeviceId = deviceId;
         m_status.deviceName = name;
-        m_status.width = width;
-        m_status.height = height;
+        m_status.deviceIp = ip;
+        m_status.isUsb = isUsb;
+        if (width > 0) m_status.width = width;
+        if (height > 0) m_status.height = height;
     }
 }
 
@@ -268,6 +298,106 @@ void HttpControlBridge::RemoveDevice(int deviceId) {
             }
             m_audioClients.erase(it);
         }
+    }
+}
+
+bool HttpControlBridge::DisconnectDevice(int deviceId) {
+    m_receiver.DisconnectClient(deviceId, true);
+    RemoveDevice(deviceId);
+    return true;
+}
+
+bool HttpControlBridge::SwapDevices(int camA, int camB) {
+    if (camA == camB) return true;
+    m_receiver.SwapClientIds(camA, camB);
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        bool hasA = (m_devices.find(camA) != m_devices.end());
+        bool hasB = (m_devices.find(camB) != m_devices.end());
+        if (hasA && hasB) {
+            DeviceInfo devA = m_devices[camA];
+            DeviceInfo devB = m_devices[camB];
+            devA.id = camB;
+            devB.id = camA;
+            m_devices[camA] = devB;
+            m_devices[camB] = devA;
+        } else if (hasA) {
+            DeviceInfo devA = m_devices[camA];
+            devA.id = camB;
+            m_devices[camB] = devA;
+            m_devices.erase(camA);
+        } else if (hasB) {
+            DeviceInfo devB = m_devices[camB];
+            devB.id = camA;
+            m_devices[camA] = devB;
+            m_devices.erase(camB);
+        }
+
+        if (m_activeDeviceId.load() == camA) {
+            m_activeDeviceId.store(camB);
+        } else if (m_activeDeviceId.load() == camB) {
+            m_activeDeviceId.store(camA);
+        }
+
+        int curActive = m_activeDeviceId.load();
+        if (m_devices.find(curActive) != m_devices.end()) {
+            m_status.deviceName = m_devices[curActive].name;
+            m_status.width = m_devices[curActive].width;
+            m_status.height = m_devices[curActive].height;
+            m_status.isVertical = m_devices[curActive].isVertical;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_frameMutex);
+        bool hasA = (m_deviceBmpFrames.find(camA) != m_deviceBmpFrames.end());
+        bool hasB = (m_deviceBmpFrames.find(camB) != m_deviceBmpFrames.end());
+        if (hasA && hasB) {
+            std::swap(m_deviceBmpFrames[camA], m_deviceBmpFrames[camB]);
+        } else if (hasA) {
+            m_deviceBmpFrames[camB] = m_deviceBmpFrames[camA];
+            m_deviceBmpFrames.erase(camA);
+        } else if (hasB) {
+            m_deviceBmpFrames[camA] = m_deviceBmpFrames[camB];
+            m_deviceBmpFrames.erase(camB);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_transformMutex);
+        bool hasA = (m_deviceTransforms.find(camA) != m_deviceTransforms.end());
+        bool hasB = (m_deviceTransforms.find(camB) != m_deviceTransforms.end());
+        if (hasA && hasB) {
+            std::swap(m_deviceTransforms[camA], m_deviceTransforms[camB]);
+        } else if (hasA) {
+            m_deviceTransforms[camB] = m_deviceTransforms[camA];
+            m_deviceTransforms.erase(camA);
+        } else if (hasB) {
+            m_deviceTransforms[camA] = m_deviceTransforms[camB];
+            m_deviceTransforms.erase(camB);
+        }
+    }
+    return true;
+}
+
+bool HttpControlBridge::ReassignDevice(int fromId, int toId) {
+    return SwapDevices(fromId, toId);
+}
+
+bool HttpControlBridge::RenameDevice(int camId, const std::string& newName) {
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    if (m_devices.find(camId) != m_devices.end()) {
+        m_devices[camId].name = newName;
+        if (m_activeDeviceId.load() == camId) {
+            m_status.deviceName = newName;
+        }
+        return true;
+    }
+    return false;
+}
+
+void HttpControlBridge::TriggerRescan() {
+    m_receiver.ClearIgnoredClients();
+    if (m_rescanCallback) {
+        m_rescanCallback();
     }
 }
 
@@ -597,10 +727,19 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         {
             std::lock_guard<std::mutex> lock(m_statusMutex);
             int activeId = m_activeDeviceId.load();
+            bool activeIsUsb = false;
+            std::string activeIp = "";
+            if (m_devices.find(activeId) != m_devices.end()) {
+                activeIsUsb = m_devices[activeId].isUsb;
+                activeIp = m_devices[activeId].ip;
+            }
+
             json << "{"
                  << "\"connected\":" << (m_status.connected ? "true" : "false") << ","
                  << "\"usbConnected\":" << (m_status.usbConnected ? "true" : "false") << ","
                  << "\"activeDeviceId\":" << activeId << ","
+                 << "\"activeDeviceIsUsb\":" << (activeIsUsb ? "true" : "false") << ","
+                 << "\"activeDeviceIp\":\"" << activeIp << "\","
                  << "\"deviceName\":\"" << m_status.deviceName << "\","
                  << "\"width\":" << m_status.width << ","
                  << "\"height\":" << m_status.height << ","
@@ -622,6 +761,8 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                 json << "{"
                      << "\"id\":" << d.id << ","
                      << "\"name\":\"" << d.name << "\","
+                     << "\"ip\":\"" << d.ip << "\","
+                     << "\"isUsb\":" << (d.isUsb ? "true" : "false") << ","
                      << "\"width\":" << d.width << ","
                      << "\"height\":" << d.height << ","
                      << "\"isVertical\":" << (d.isVertical ? "true" : "false") << ","
@@ -663,6 +804,111 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             }
         }
         std::string body = "{\"status\":\"ok\",\"activeDeviceId\":" + std::to_string(m_activeDeviceId.load()) + "}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 3.1 Disconnect Camera API (/api/disconnect_cam?cam=X)
+    if (firstLine.find("/api/disconnect_cam") != std::string::npos || firstLine.find("/api/disconnect") != std::string::npos) {
+        if (requestedCamId > 0) {
+            DisconnectDevice(requestedCamId);
+        }
+        std::string body = "{\"status\":\"ok\",\"disconnectedCam\":" + std::to_string(requestedCamId) + "}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 3.2 Reassign / Swap Camera API (/api/swap_cams?camA=1&camB=2 or /api/reassign_cam?from=2&to=1)
+    if (firstLine.find("/api/swap_cams") != std::string::npos || firstLine.find("/api/reassign_cam") != std::string::npos) {
+        int camA = 0, camB = 0;
+        size_t pA = requestStr.find("camA=");
+        if (pA == std::string::npos) pA = requestStr.find("from=");
+        if (pA != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", pA + 5);
+            try { camA = std::stoi(requestStr.substr(pA + 5, endP - (pA + 5))); } catch (...) {}
+        }
+        size_t pB = requestStr.find("camB=");
+        if (pB == std::string::npos) pB = requestStr.find("to=");
+        if (pB != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", pB + 3);
+            if (requestStr.find("camB=") != std::string::npos) {
+                endP = requestStr.find_first_of("& \r\n", pB + 5);
+                try { camB = std::stoi(requestStr.substr(pB + 5, endP - (pB + 5))); } catch (...) {}
+            } else {
+                try { camB = std::stoi(requestStr.substr(pB + 3, endP - (pB + 3))); } catch (...) {}
+            }
+        }
+
+        bool ok = false;
+        if (camA > 0 && camB > 0) {
+            ok = SwapDevices(camA, camB);
+        }
+
+        std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 3.3 Rename Camera API (/api/rename_cam?cam=X&name=CustomName)
+    if (firstLine.find("/api/rename_cam") != std::string::npos) {
+        std::string newName;
+        size_t pName = requestStr.find("name=");
+        if (pName != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", pName + 5);
+            newName = requestStr.substr(pName + 5, endP - (pName + 5));
+            newName = UrlDecode(newName);
+        }
+
+        bool ok = false;
+        if (requestedCamId > 0 && !newName.empty()) {
+            ok = RenameDevice(requestedCamId, newName);
+        }
+
+        std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 3.4 Force Rescan API (/api/rescan)
+    if (firstLine.find("/api/rescan") != std::string::npos) {
+        TriggerRescan();
+        std::string body = "{\"status\":\"ok\",\"message\":\"rescan_triggered\"}";
         std::ostringstream oss;
         oss << "HTTP/1.1 200 OK\r\n"
             << "Content-Type: application/json\r\n"

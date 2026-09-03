@@ -1,5 +1,6 @@
 #include "tcp_receiver.h"
 #include <iostream>
+#include <mstcpip.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -113,6 +114,83 @@ bool TcpReceiver::SendCameraCommand(const BouleCamCameraCmd& cmd, int deviceId) 
     return anySent;
 }
 
+bool TcpReceiver::DisconnectClient(int deviceId, bool blockFutureReconnect) {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    auto it = m_clients.find(deviceId);
+    if (it != m_clients.end()) {
+        if (blockFutureReconnect) {
+            if (!it->second.ip.empty() && it->second.ip != "127.0.0.1") {
+                m_ignoredClients.insert(it->second.ip);
+            }
+            if (!it->second.deviceName.empty()) {
+                m_ignoredClients.insert(it->second.deviceName);
+            }
+        }
+        if (it->second.deviceIdRef) {
+            it->second.deviceIdRef->store(-1);
+        }
+        if (it->second.socket != INVALID_SOCKET) {
+            closesocket(it->second.socket);
+            it->second.socket = INVALID_SOCKET;
+        }
+        m_clients.erase(it);
+        m_activeClientCount--;
+        std::cout << "[TcpReceiver] Client [Device " << deviceId << "] disconnected and unlinked." << std::endl;
+        return true;
+    }
+    return false;
+}
+
+void TcpReceiver::ClearIgnoredClients() {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    m_ignoredClients.clear();
+    std::cout << "[TcpReceiver] Cleared ignored clients list (ready for discovery/rescan)." << std::endl;
+}
+
+bool TcpReceiver::SwapClientIds(int camA, int camB) {
+    if (camA == camB) return true;
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    bool hasA = (m_clients.find(camA) != m_clients.end());
+    bool hasB = (m_clients.find(camB) != m_clients.end());
+    if (!hasA && !hasB) return false;
+
+    if (hasA && hasB) {
+        ConnectedClient clientA = m_clients[camA];
+        ConnectedClient clientB = m_clients[camB];
+
+        clientA.id = camB;
+        if (clientA.deviceIdRef) clientA.deviceIdRef->store(camB);
+
+        clientB.id = camA;
+        if (clientB.deviceIdRef) clientB.deviceIdRef->store(camA);
+
+        m_clients[camA] = clientB;
+        m_clients[camB] = clientA;
+        std::cout << "[TcpReceiver] Swapped client IDs: " << camA << " <-> " << camB << std::endl;
+        return true;
+    } else if (hasA) {
+        ConnectedClient clientA = m_clients[camA];
+        clientA.id = camB;
+        if (clientA.deviceIdRef) clientA.deviceIdRef->store(camB);
+        m_clients[camB] = clientA;
+        m_clients.erase(camA);
+        std::cout << "[TcpReceiver] Reassigned client ID: " << camA << " -> " << camB << std::endl;
+        return true;
+    } else {
+        ConnectedClient clientB = m_clients[camB];
+        clientB.id = camA;
+        if (clientB.deviceIdRef) clientB.deviceIdRef->store(camA);
+        m_clients[camA] = clientB;
+        m_clients.erase(camB);
+        std::cout << "[TcpReceiver] Reassigned client ID: " << camB << " -> " << camA << std::endl;
+        return true;
+    }
+}
+
+bool TcpReceiver::ReassignClientId(int fromId, int toId) {
+    return SwapClientIds(fromId, toId);
+}
+
 std::vector<ConnectedClient> TcpReceiver::GetConnectedClients() {
     std::lock_guard<std::mutex> lock(m_clientsMutex);
     std::vector<ConnectedClient> list;
@@ -120,6 +198,32 @@ std::vector<ConnectedClient> TcpReceiver::GetConnectedClients() {
         list.push_back(pair.second);
     }
     return list;
+}
+
+double TcpReceiver::GetClientRttMs(int deviceId) {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    auto it = m_clients.find(deviceId);
+    if (it != m_clients.end() && it->second.socket != INVALID_SOCKET) {
+        TCP_INFO_v0 tcpInfo{};
+        DWORD bytesReturned = 0;
+        int res = WSAIoctl(it->second.socket, SIO_TCP_INFO, NULL, 0, &tcpInfo, sizeof(tcpInfo), &bytesReturned, NULL, NULL);
+        if (res == 0 && tcpInfo.RttUs > 0) {
+            return static_cast<double>(tcpInfo.RttUs) / 1000.0;
+        }
+        if (it->second.ip == "127.0.0.1") {
+            return 1.5; // Sub-millisecond localhost loopback
+        }
+    }
+    return 0.0;
+}
+
+std::string TcpReceiver::GetClientIp(int deviceId) {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    auto it = m_clients.find(deviceId);
+    if (it != m_clients.end()) {
+        return it->second.ip;
+    }
+    return "";
 }
 
 void TcpReceiver::ListenThreadWorker() {
@@ -172,7 +276,7 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
     std::vector<uint8_t> payloadBuffer;
     payloadBuffer.reserve(1024 * 1024); // 1MB initial allocation
 
-    int assignedId = -1;
+    auto deviceIdRef = std::make_shared<std::atomic<int>>(-1);
 
     while (m_isRunning.load()) {
         // Step 1: Read the 4-byte Magic Number to synchronize packet boundaries
@@ -201,6 +305,19 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
 
             std::string devName(req.device_name);
 
+            // Check if device is ignored/unlinked
+            {
+                std::lock_guard<std::mutex> lock(m_clientsMutex);
+                if (m_ignoredClients.find(clientIp) != m_ignoredClients.end() ||
+                    (!devName.empty() && m_ignoredClients.find(devName) != m_ignoredClients.end())) {
+                    std::cout << "[TcpReceiver] Blocked reconnect from unlinked client: " << devName 
+                              << " (" << clientIp << ")" << std::endl;
+                    break;
+                }
+            }
+
+            int assignedId = -1;
+
             // ANTI-DUPLICATES: Search if same client is reconnecting
             {
                 std::lock_guard<std::mutex> lock(m_clientsMutex);
@@ -219,6 +336,8 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                         pair.second.socket = clientSocket;
                         pair.second.port = clientPort;
                         pair.second.deviceName = devName;
+                        pair.second.deviceIdRef = deviceIdRef;
+                        deviceIdRef->store(assignedId);
                         std::cout << "[TcpReceiver] Reconnected [Device " << assignedId << "] (" << devName 
                                   << " from " << clientIp << ":" << clientPort << ")" << std::endl;
                         break;
@@ -237,6 +356,8 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                     client.socket = clientSocket;
                     client.ip = clientIp;
                     client.port = clientPort;
+                    client.deviceIdRef = deviceIdRef;
+                    deviceIdRef->store(assignedId);
                     m_clients[assignedId] = client;
                     m_activeClientCount++;
                     std::cout << "[TcpReceiver] New device accepted [Device " << assignedId << "] (" 
@@ -263,8 +384,11 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 break;
             }
 
+            int currentId = deviceIdRef->load();
+            if (currentId <= 0) break;
+
             if (header.payload_size > 5 * 1024 * 1024) {
-                std::cerr << "[TcpReceiver][Device " << assignedId << "] Frame payload too large (" 
+                std::cerr << "[TcpReceiver][Device " << currentId << "] Frame payload too large (" 
                           << header.payload_size << " bytes). Terminating connection." << std::endl;
                 break;
             }
@@ -277,8 +401,8 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 break;
             }
 
-            if (m_frameCallback && assignedId > 0) {
-                m_frameCallback(assignedId, header, payloadBuffer.data(), header.payload_size);
+            if (m_frameCallback && currentId > 0) {
+                m_frameCallback(currentId, header, payloadBuffer.data(), header.payload_size);
             }
         } else if (packetType == BOULECAM_PKT_CAMERA_STATE) {
             BouleCamCameraState state{};
@@ -286,8 +410,9 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 break;
             }
 
-            if (m_cameraStateCallback && assignedId > 0) {
-                m_cameraStateCallback(assignedId, state);
+            int currentId = deviceIdRef->load();
+            if (m_cameraStateCallback && currentId > 0) {
+                m_cameraStateCallback(currentId, state);
             }
         } else if (packetType == BOULECAM_PKT_AUDIO_DATA) {
             BouleCamAudioHeader audioHeader{};
@@ -307,19 +432,21 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 break;
             }
 
-            if (m_audioCallback && assignedId > 0) {
-                m_audioCallback(assignedId, audioHeader, payloadBuffer.data(), audioHeader.payload_size);
+            int currentId = deviceIdRef->load();
+            if (m_audioCallback && currentId > 0) {
+                m_audioCallback(currentId, audioHeader, payloadBuffer.data(), audioHeader.payload_size);
             }
         }
     }
 
     // Client disconnected or timed out: only erase if this socket is still the active one
-    if (assignedId > 0) {
+    int finalDevId = deviceIdRef->load();
+    if (finalDevId > 0) {
         std::lock_guard<std::mutex> lock(m_clientsMutex);
-        if (m_clients.find(assignedId) != m_clients.end() && m_clients[assignedId].socket == clientSocket) {
-            m_clients.erase(assignedId);
+        if (m_clients.find(finalDevId) != m_clients.end() && m_clients[finalDevId].socket == clientSocket) {
+            m_clients.erase(finalDevId);
             m_activeClientCount--;
-            std::cout << "[TcpReceiver] Device " << assignedId << " disconnected." << std::endl;
+            std::cout << "[TcpReceiver] Device " << finalDevId << " disconnected." << std::endl;
         }
     }
     closesocket(clientSocket);

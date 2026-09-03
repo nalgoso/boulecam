@@ -19,15 +19,27 @@
       <span style="font-weight:700; font-size:1.15rem; letter-spacing:-0.5px;">BouleCam</span>
     </div>
 
-    <!-- Clean USB / Wi-Fi Toggle directly in header -->
+    <!-- Sleek Circular Sliding Toggle (USB / WiFi) directly in header -->
     <div class="header-toggle-container">
-      <div class="tabs" style="margin: 0;">
-        <button class="tab-btn active" id="tab-usb" style="padding: 4px 12px; font-size: 0.8rem;">🔌 Cable USB</button>
-        <button class="tab-btn" id="tab-wifi" style="padding: 4px 12px; font-size: 0.8rem;">📶 Wi-Fi Auto</button>
+      <div class="sliding-toggle-wrapper mode-wifi" id="mode-toggle" title="Modo de conexión del dispositivo" role="button" tabindex="0">
+        <span class="sliding-toggle-label label-usb">USB</span>
+        <div class="sliding-track">
+          <div class="sliding-toggle-knob" id="toggle-knob">
+            <span class="knob-icon" id="knob-icon">📶</span>
+          </div>
+        </div>
+        <span class="sliding-toggle-label label-wifi">WiFi</span>
       </div>
     </div>
 
     <div class="header-status">
+      <button class="btn-rescan" id="btn-rescan" title="Forzar actualización y buscar dispositivos USB y Wi-Fi">
+        <svg class="rescan-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+        </svg>
+        <span>Buscar Dispositivos</span>
+      </button>
+
       <div class="status-indicator">
         <span class="dot" id="status-dot"></span>
         <span id="status-text">Buscando dispositivo...</span>
@@ -194,6 +206,70 @@
       </div>
     </div>
   </main>
+
+  <!-- Modal Renombrar / Reasignar Orden de Cámara -->
+  <div class="modal-backdrop" id="modal-edit-cam" style="display:none;">
+    <div class="modal-card glass">
+      <div class="modal-header">
+        <h3 style="font-size:1rem; font-weight:700; display:flex; align-items:center; gap:8px;">
+          <span>⚙️</span> Configurar Señal de Cámara
+        </h3>
+        <button class="modal-close-btn" id="modal-edit-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label for="edit-cam-number">Número de Señal (Canal):</label>
+          <select id="edit-cam-number" class="modal-select">
+            <option value="1">Cam 1 (Señal principal / OBS 1)</option>
+            <option value="2">Cam 2 (Señal secundaria / OBS 2)</option>
+            <option value="3">Cam 3 (Señal auxiliar / OBS 3)</option>
+            <option value="4">Cam 4 (OBS 4)</option>
+          </select>
+          <small style="color:var(--text-muted); font-size:0.75rem; margin-top:5px; display:block;">
+            💡 Si eliges un número ya en uso, se intercambiarán automáticamente las señales para corregir el orden sin cortar OBS.
+          </small>
+        </div>
+
+        <div class="modal-field" style="margin-top:14px;">
+          <label for="edit-cam-name">Nombre descriptivo:</label>
+          <input type="text" id="edit-cam-name" class="modal-input" placeholder="Ej: Púlpito, Piano, General..." maxlength="30" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-secondary" id="modal-edit-cancel">Cancelar</button>
+        <button class="modal-btn modal-btn-primary" id="modal-edit-save">Guardar Cambios</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Confirmar Desvincular -->
+  <div class="modal-backdrop" id="modal-unlink-cam" style="display:none;">
+    <div class="modal-card glass" style="max-width:390px;">
+      <div class="modal-header">
+        <h3 style="font-size:1rem; font-weight:700; color:var(--accent-red); display:flex; align-items:center; gap:8px;">
+          <span>⚠️</span> Desvincular Dispositivo
+        </h3>
+        <button class="modal-close-btn" id="modal-unlink-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.88rem; color:#e0e0e0; line-height:1.4;" id="modal-unlink-text">
+          ¿Seguro que deseas desvincular este dispositivo? Se cerrará su conexión y se dejará de usar en BouleCam.
+        </p>
+        <small style="color:var(--text-muted); font-size:0.75rem; margin-top:8px; display:block;">
+          Puedes volver a vincularlo cuando desees presionando "Buscar Dispositivos".
+        </small>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-secondary" id="modal-unlink-cancel">Cancelar</button>
+        <button class="modal-btn modal-btn-danger" id="modal-unlink-confirm">Desvincular</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick Floating Toast Notification -->
+  <div id="toast-notify" class="toast-notification">
+    <span id="toast-msg">Mensaje</span>
+  </div>
 
   <script src="renderer.js"></script>
 </body>

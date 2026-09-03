@@ -13,6 +13,9 @@
 #include <cstdint>
 #include "boulecam_protocol.h"
 
+#include <set>
+#include <memory>
+
 namespace boulecam {
 
 // Callback function type: invoked when a complete H.264/H.265 frame packet is assembled
@@ -46,6 +49,7 @@ struct ConnectedClient {
     SOCKET socket;
     std::string ip;
     uint16_t port;
+    std::shared_ptr<std::atomic<int>> deviceIdRef;
 };
 
 class TcpReceiver {
@@ -66,9 +70,19 @@ public:
     // Send remote camera control command to connected mobile device (deviceId 0 = all/active)
     bool SendCameraCommand(const BouleCamCameraCmd& cmd, int deviceId = 0);
 
+    // Disconnect and unlink a specific device
+    bool DisconnectClient(int deviceId, bool blockFutureReconnect = true);
+    void ClearIgnoredClients();
+
+    // Reorder / swap camera channels (e.g. Cam 1 <-> Cam 2)
+    bool SwapClientIds(int camA, int camB);
+    bool ReassignClientId(int fromId, int toId);
+
     void SetAudioCallback(AudioReceivedCallback audioCb) { m_audioCallback = audioCb; }
 
     std::vector<ConnectedClient> GetConnectedClients();
+    double GetClientRttMs(int deviceId);
+    std::string GetClientIp(int deviceId);
 
 private:
     void ListenThreadWorker();
@@ -83,6 +97,7 @@ private:
 
     std::mutex m_clientsMutex;
     std::map<int, ConnectedClient> m_clients;
+    std::set<std::string> m_ignoredClients;
 
     std::thread m_listenThread;
     FrameReceivedCallback m_frameCallback;
@@ -92,3 +107,4 @@ private:
 };
 
 } // namespace boulecam
+

@@ -20,6 +20,7 @@ data class CameraCommand(
 class StreamSender(
     @Volatile private var host: String = "127.0.0.1",
     @Volatile private var port: Int = 8088,
+    private val deviceName: String = "BouleCam Mobile",
     private val onConnectionStateChanged: (Boolean) -> Unit,
     private val onCommandReceived: ((CameraCommand) -> Unit)? = null
 ) {
@@ -32,6 +33,8 @@ class StreamSender(
     private val isConnected = AtomicBoolean(false)
     private val isRunning = AtomicBoolean(false)
     private var sequenceNumber = 0L
+
+    fun isConnected(): Boolean = isConnected.get()
 
     private val sendQueue = java.util.concurrent.ArrayBlockingQueue<ByteArray>(2)
     private var workerThread: Thread? = null
@@ -233,9 +236,9 @@ class StreamSender(
             hsBuffer.putInt(60)          // Target FPS (4)
             hsBuffer.putInt(8000000)     // Bitrate (8 Mbps) (4)
 
-            val deviceName = (android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL).toByteArray()
+            val nameBytes = deviceName.toByteArray(Charsets.UTF_8)
             val devBytes = ByteArray(64)
-            System.arraycopy(deviceName, 0, devBytes, 0, minOf(deviceName.size, 63))
+            System.arraycopy(nameBytes, 0, devBytes, 0, minOf(nameBytes.size, 63))
             hsBuffer.put(devBytes) // (64)
 
             out.write(hsBuffer.array())

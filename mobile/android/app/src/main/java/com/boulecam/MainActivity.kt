@@ -206,12 +206,12 @@ class MainActivity : AppCompatActivity() {
             if (isUsbMode) {
                 thumb.animate().translationX(0f).setDuration(200).start()
                 txtThumb.text = "USB"
-                txtHint.text = "Wi-Fi"
+                txtHint.text = "WiFi"
                 (txtHint.layoutParams as? FrameLayout.LayoutParams)?.gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
                 txtHint.requestLayout()
             } else {
                 thumb.animate().translationX(maxTravel).setDuration(200).start()
-                txtThumb.text = "Wi-Fi"
+                txtThumb.text = "WiFi"
                 txtHint.text = "USB"
                 (txtHint.layoutParams as? FrameLayout.LayoutParams)?.gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
                 txtHint.requestLayout()
@@ -497,20 +497,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun getFriendlyDeviceName(): String {
+        try {
+            val devName = android.provider.Settings.Global.getString(contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+            if (!devName.isNullOrBlank()) return devName
+        } catch (e: Exception) {}
+        try {
+            val devName = android.provider.Settings.Secure.getString(contentResolver, "bluetooth_name")
+            if (!devName.isNullOrBlank()) return devName
+        } catch (e: Exception) {}
+        val manufacturer = android.os.Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
+        return "$manufacturer ${android.os.Build.MODEL}"
+    }
+
     private fun setupStreamingPipeline() {
+        val devName = getFriendlyDeviceName()
+
         // 1. Initialize Network Streamer with Bidirectional Command Handler
-        sender = StreamSender("127.0.0.1", 8088, 
+        sender = StreamSender(
+            host = "127.0.0.1", 
+            port = 8088,
+            deviceName = devName,
             onConnectionStateChanged = { connected ->
                 runOnUiThread {
                     if (connected) {
-                        val modeLabel = if (isUsbMode) "Cable USB" else "Wi-Fi"
+                        val modeLabel = if (isUsbMode) "Cable USB" else "WiFi"
                         statusTextView?.text = "STATUS: EN VIVO - $modeLabel"
                         statusTextView?.setTextColor(COLOR_LIGHT_GREEN)
+                        // START / RESUME RECORDING ONLY WHEN CONNECTED TO PC
+                        encoder?.setSuspended(false)
                         encoder?.requestKeyFrame()
+                        if (isMicEnabled) {
+                            audioPipeline?.start()
+                        }
                     } else {
-                        val searchingLabel = if (isUsbMode) "Cable USB" else "Wi-Fi"
+                        val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi"
                         statusTextView?.text = "STATUS: BUSCANDO PC ($searchingLabel)..."
                         statusTextView?.setTextColor(COLOR_GRAY)
+                        // PAUSE HARDWARE ENCODER AND AUDIO TO SAVE BATTERY AND PREVENT OVERHEATING!
+                        encoder?.setSuspended(true)
+                        audioPipeline?.stop()
                     }
                 }
             },
@@ -520,34 +546,50 @@ class MainActivity : AppCompatActivity() {
         )
         sender?.start()
 
-        // 2. Start Auto-Discovery Manager for Wi-Fi Auto-Detect
+        // 2. Start Auto-Discovery Manager for Wi-Fi & USB Auto-Detect
         discoveryManager = AutoDiscoveryManager(this) { device ->
             runOnUiThread {
-                if (!isUsbMode && !device.isUsb) {
-                    if (sender?.getHost() != device.ip) {
-                        sender?.setHost(device.ip, device.port)
+                if (device.isUsb) {
+                    isUsbCableConnected = true
+                    updateConnectionButtonsUI()
+                    if (isUsbMode) {
+                        sender?.setHost("127.0.0.1", 8088)
                     }
-                    if (!wifiToastShown) {
-                        wifiToastShown = true
-                        Toast.makeText(this, "PC Conectada por Wi-Fi", Toast.LENGTH_SHORT).show()
+                } else {
+                    // Wi-Fi PC detected
+                    if (!isUsbCableConnected || !isUsbMode) {
+                        if (isUsbMode && !isUsbCableConnected) {
+                            isUsbMode = false
+                            updateConnectionButtonsUI()
+                        }
+                        if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
+                            sender?.setHost(device.ip, device.port)
+                        }
+                        if (!wifiToastShown) {
+                            wifiToastShown = true
+                            Toast.makeText(this, "PC BouleCam encontrada por WiFi (${device.ip})", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             }
         }
+        discoveryManager?.start()
 
         // 3. Initialize Hardware MediaCodec H.264 Encoder (1920x1080 60 FPS)
         encoder = HardwareEncoder(1920, 1080, 60, 8_000_000) { isKeyFrame, timestampUs, naluData ->
-            sender?.sendFrame(isKeyFrame, timestampUs, naluData, physicalOrientationDegrees)
+            if (sender?.isConnected() == true) {
+                sender?.sendFrame(isKeyFrame, timestampUs, naluData, physicalOrientationDegrees)
+            }
         }
         encoder?.start()
+        encoder?.setSuspended(true) // Suspended until PC connection is established!
 
-        // 3.5. Initialize Ultra Low Latency PCM Audio Pipeline (48 kHz 16-bit Mono)
+        // 3.5. Prepare Ultra Low Latency PCM Audio Pipeline (Starts only when connected)
         audioPipeline = AudioCapturePipeline(sampleRate = 48000) { pcmData, size ->
-            if (isMicEnabled) {
+            if (isMicEnabled && sender?.isConnected() == true) {
                 sender?.sendAudio(pcmData, size)
             }
         }
-        audioPipeline?.start()
 
         // 4. Initialize TextureView Surface Listener with AutoFit transform
         textureView?.surfaceTextureListener = object : TextureView.SurfaceTextureListener {

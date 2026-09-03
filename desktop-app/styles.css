@@ -109,6 +109,111 @@ header {
   50% { transform: scale(1.15); opacity: 0.8; }
 }
 
+/* Modern Sliding Circular Toggle (USB / WiFi) */
+.header-toggle-container {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.sliding-toggle-wrapper {
+  position: relative;
+  height: 32px;
+  background: rgba(18, 22, 34, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: border-color 0.2s, box-shadow 0.2s, opacity 0.2s;
+}
+
+.sliding-toggle-wrapper:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.sliding-toggle-wrapper.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sliding-toggle-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  user-select: none;
+  transition: color 0.25s, text-shadow 0.25s;
+}
+
+.label-usb {
+  color: #64748b;
+}
+
+.label-wifi {
+  color: #64748b;
+}
+
+.sliding-toggle-wrapper.mode-usb .label-usb {
+  color: #38bdf8;
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.45);
+}
+
+.sliding-toggle-wrapper.mode-wifi .label-wifi {
+  color: #4ade80;
+  text-shadow: 0 0 8px rgba(74, 222, 128, 0.45);
+}
+
+/* Central track where knob travels smoothly without ever touching labels */
+.sliding-track {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 11px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.sliding-toggle-knob {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s, box-shadow 0.25s;
+}
+
+.sliding-toggle-wrapper.mode-usb .sliding-toggle-knob {
+  transform: translateX(0);
+  background: linear-gradient(135deg, #38bdf8, #0284c7);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+}
+
+.sliding-toggle-wrapper.mode-wifi .sliding-toggle-knob {
+  transform: translateX(18px);
+  background: linear-gradient(135deg, #4ade80, #16a34a);
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.5);
+}
+
+.knob-icon {
+  font-size: 0.65rem;
+  line-height: 1;
+}
+
 /* App Main Body */
 main {
   flex: 1;
@@ -402,6 +507,7 @@ main {
 /* Custom Range Slider */
 input[type="range"] {
   -webkit-appearance: none;
+  appearance: none;
   width: 100%;
   height: 6px;
   background: rgba(255, 255, 255, 0.1);
@@ -411,6 +517,7 @@ input[type="range"] {
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 18px;
   height: 18px;
   background: var(--primary);
@@ -662,3 +769,251 @@ input[type="range"]::-webkit-slider-thumb:hover {
   background: var(--color-green) !important;
   box-shadow: 0 0 12px var(--primary-glow);
 }
+
+/* Header Rescan Button */
+.btn-rescan {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border-color);
+  color: #e2e8f0;
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+}
+
+.btn-rescan:hover {
+  background: rgba(74, 222, 128, 0.15);
+  border-color: var(--color-light-green);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.rescan-icon.spinning {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Camera Tab Action Buttons */
+.cam-tab {
+  position: relative;
+  user-select: none;
+}
+
+.cam-tab-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.cam-tab-edit-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.cam-tab-edit-btn:hover {
+  opacity: 1;
+  transform: scale(1.18);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.cam-tab-close-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: inherit;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cam-tab-close-btn:hover {
+  background: var(--accent-red);
+  color: #fff;
+  transform: scale(1.2);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.7);
+}
+
+/* Modal Dialogs */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: modalFadeIn 0.2s ease-out;
+}
+
+.modal-card {
+  width: 90%;
+  max-width: 440px;
+  background: #191b24;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.modal-close-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.modal-field label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin-bottom: 6px;
+}
+
+.modal-input, .modal-select {
+  width: 100%;
+  padding: 9px 12px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.85rem;
+  outline: none;
+  font-family: var(--font-sans);
+  transition: border-color 0.2s;
+}
+
+.modal-input:focus, .modal-select:focus {
+  border-color: var(--border-active);
+  box-shadow: 0 0 8px var(--primary-glow);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.modal-btn {
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+}
+
+.modal-btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+}
+
+.modal-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.modal-btn-primary {
+  background: var(--color-green);
+  border-color: var(--color-light-green);
+  color: #fff;
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+
+.modal-btn-primary:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.modal-btn-danger {
+  background: var(--accent-red);
+  color: #fff;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+}
+
+.modal-btn-danger:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Floating Toast Notification */
+.toast-notification {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 9px 20px;
+  border-radius: 30px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  background: rgba(18, 22, 34, 0.95);
+  border: 1px solid var(--border-active);
+  color: #fff;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+  z-index: 2000;
+  pointer-events: none;
+  display: none;
+  animation: toastPop 0.25s ease-out;
+}
+
+@keyframes toastPop {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+

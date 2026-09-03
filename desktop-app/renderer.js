@@ -28,6 +28,37 @@ let isMirrored = false;
 let manualRotation = 0;
 let isDimScreenActive = false;
 let lastDevicesList = [];
+let unlinkedCamIds = new Set();
+
+function loadCustomNames() {
+  try {
+    const raw = localStorage.getItem('boulecam_custom_names');
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveCustomNames(names) {
+  try {
+    localStorage.setItem('boulecam_custom_names', JSON.stringify(names));
+  } catch (e) {}
+}
+
+const customCamNames = loadCustomNames();
+
+let toastTimeout = null;
+function showToast(message, duration = 2500) {
+  const toast = document.getElementById('toast-notify');
+  const toastMsg = document.getElementById('toast-msg');
+  if (!toast || !toastMsg) return;
+  toastMsg.textContent = message;
+  toast.style.display = 'block';
+  if (toastTimeout) clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => {
+    toast.style.display = 'none';
+  }, duration);
+}
 
 function getDeviceKey(camId, deviceName) {
   if (deviceName && deviceName.trim() && deviceName !== 'Móvil' && deviceName !== 'Desconocido' && deviceName !== 'Sin conexión') {
@@ -92,9 +123,10 @@ const btnMirror = document.getElementById('btn-mirror');
 const btnRotate180 = document.getElementById('btn-rotate-180');
 const btnDimScreen = document.getElementById('btn-dim-screen');
 
-// Connection Tabs
-const tabUsb = document.getElementById('tab-usb');
-const tabWifi = document.getElementById('tab-wifi');
+// Circular Sliding Toggle (USB / WiFi)
+const modeToggle = document.getElementById('mode-toggle');
+const toggleKnob = document.getElementById('toggle-knob');
+const knobIcon = document.getElementById('knob-icon');
 
 // Sliders & Controls
 const sliderIso = document.getElementById('slider-iso');
@@ -250,8 +282,167 @@ function updateObsBox(camId) {
     inputObsUrl.value = `http://127.0.0.1:8090/obs/${camId}`;
   }
   if (obsCamBadge) {
-    obsCamBadge.textContent = `Cam ${camId}`;
+    const customName = customCamNames[camId];
+    obsCamBadge.textContent = customName ? `Cam ${camId} (${customName})` : `Cam ${camId}`;
   }
+}
+
+let currentUnlinkTargetId = null;
+let currentEditTargetId = null;
+
+function setupModals() {
+  // Modal Edit Cam
+  const modalEdit = document.getElementById('modal-edit-cam');
+  const modalEditClose = document.getElementById('modal-edit-close');
+  const modalEditCancel = document.getElementById('modal-edit-cancel');
+  const modalEditSave = document.getElementById('modal-edit-save');
+  const editCamNumber = document.getElementById('edit-cam-number');
+  const editCamName = document.getElementById('edit-cam-name');
+
+  const closeEditModal = () => {
+    if (modalEdit) modalEdit.style.display = 'none';
+    currentEditTargetId = null;
+  };
+
+  if (modalEditClose) modalEditClose.addEventListener('click', closeEditModal);
+  if (modalEditCancel) modalEditCancel.addEventListener('click', closeEditModal);
+  if (modalEdit) {
+    modalEdit.addEventListener('click', (e) => {
+      if (e.target === modalEdit) closeEditModal();
+    });
+  }
+
+  if (modalEditSave) {
+    modalEditSave.addEventListener('click', async () => {
+      if (!currentEditTargetId) return;
+      const targetId = currentEditTargetId;
+      const newNum = parseInt(editCamNumber.value);
+      const newName = editCamName.value.trim();
+
+      // Update name
+      if (newName) {
+        customCamNames[newNum] = newName;
+        saveCustomNames(customCamNames);
+        fetch(`${API_BASE}/api/rename_cam?cam=${targetId}&name=${encodeURIComponent(newName)}`, { method: 'POST' }).catch(() => {});
+      } else if (customCamNames[targetId]) {
+        delete customCamNames[targetId];
+        saveCustomNames(customCamNames);
+      }
+
+      // Reassign / Swap if number changed
+      if (newNum !== targetId) {
+        try {
+          await fetch(`${API_BASE}/api/swap_cams?camA=${targetId}&camB=${newNum}`, { method: 'POST' });
+        } catch (e) {}
+
+        if (customCamNames[targetId] && !customCamNames[newNum]) {
+          customCamNames[newNum] = customCamNames[targetId];
+          delete customCamNames[targetId];
+          saveCustomNames(customCamNames);
+        }
+
+        if (activeCamId === targetId) {
+          activeCamId = newNum;
+        }
+      }
+
+      closeEditModal();
+      showToast(`✓ Señal guardada como Cam ${newNum}`);
+      pollStatus();
+    });
+  }
+
+  // Modal Unlink Cam
+  const modalUnlink = document.getElementById('modal-unlink-cam');
+  const modalUnlinkClose = document.getElementById('modal-unlink-close');
+  const modalUnlinkCancel = document.getElementById('modal-unlink-cancel');
+  const modalUnlinkConfirm = document.getElementById('modal-unlink-confirm');
+
+  const closeUnlinkModal = () => {
+    if (modalUnlink) modalUnlink.style.display = 'none';
+    currentUnlinkTargetId = null;
+  };
+
+  if (modalUnlinkClose) modalUnlinkClose.addEventListener('click', closeUnlinkModal);
+  if (modalUnlinkCancel) modalUnlinkCancel.addEventListener('click', closeUnlinkModal);
+  if (modalUnlink) {
+    modalUnlink.addEventListener('click', (e) => {
+      if (e.target === modalUnlink) closeUnlinkModal();
+    });
+  }
+
+  if (modalUnlinkConfirm) {
+    modalUnlinkConfirm.addEventListener('click', async () => {
+      if (!currentUnlinkTargetId) return;
+      const idToUnlink = currentUnlinkTargetId;
+      unlinkedCamIds.add(idToUnlink);
+
+      try {
+        await fetch(`${API_BASE}/api/disconnect_cam?cam=${idToUnlink}`, { method: 'POST' });
+      } catch (e) {}
+
+      closeUnlinkModal();
+      showToast(`Dispositivo desvinculado (Cam ${idToUnlink})`);
+
+      // If active cam was unlinked, switch to another remaining cam
+      const remaining = (lastDevicesList || []).filter(d => d.id !== idToUnlink && !unlinkedCamIds.has(d.id));
+      if (remaining.length > 0) {
+        selectCamera(remaining[0].id);
+      } else {
+        activeCamId = 1;
+        updateObsBox(1);
+        applyActiveConfigToUI(false);
+      }
+
+      pollStatus();
+    });
+  }
+}
+
+function openEditModal(camId) {
+  const modalEdit = document.getElementById('modal-edit-cam');
+  const editCamNumber = document.getElementById('edit-cam-number');
+  const editCamName = document.getElementById('edit-cam-name');
+  if (!modalEdit || !editCamNumber || !editCamName) return;
+
+  currentEditTargetId = camId;
+  const dev = (lastDevicesList || []).find(d => d.id === camId);
+  const activeDevices = (lastDevicesList || []).filter(d => !unlinkedCamIds.has(d.id));
+
+  // Build options for select
+  let selectHtml = '';
+  const maxChannels = Math.max(activeDevices.length + 1, 4);
+  for (let i = 1; i <= maxChannels; i++) {
+    const occupant = activeDevices.find(d => d.id === i);
+    let label = `Cam ${i}`;
+    if (i === camId) {
+      label += ' (Actual)';
+    } else if (occupant) {
+      const occName = customCamNames[occupant.id] || occupant.name || 'Móvil';
+      label += ` (Intercambiar con ${occName})`;
+    } else {
+      label += ' (Canal libre)';
+    }
+    selectHtml += `<option value="${i}" ${i === camId ? 'selected' : ''}>${label}</option>`;
+  }
+  editCamNumber.innerHTML = selectHtml;
+  editCamName.value = customCamNames[camId] || (dev?.name !== 'Móvil' ? (dev?.name || '') : '');
+  modalEdit.style.display = 'flex';
+}
+
+function openUnlinkModal(camId) {
+  const modalUnlink = document.getElementById('modal-unlink-cam');
+  const modalUnlinkText = document.getElementById('modal-unlink-text');
+  if (!modalUnlink) return;
+
+  currentUnlinkTargetId = camId;
+  const dev = (lastDevicesList || []).find(d => d.id === camId);
+  const devName = customCamNames[camId] || dev?.name || `Cam ${camId}`;
+
+  if (modalUnlinkText) {
+    modalUnlinkText.textContent = `¿Seguro que deseas desvincular ${devName} (Cam ${camId})? Se cerrará su conexión y se dejará de usar en BouleCam.`;
+  }
+  modalUnlink.style.display = 'flex';
 }
 
 // Render dynamic camera selector tabs
@@ -259,7 +450,9 @@ function renderDeviceTabs(devices, activeId) {
   if (!cameraSelectorBar) return;
   lastDevicesList = devices || [];
 
-  if (devices.length === 0) {
+  const availableDevices = (devices || []).filter(d => !unlinkedCamIds.has(d.id));
+
+  if (availableDevices.length === 0) {
     cameraSelectorBar.innerHTML = `
       <div class="cam-tab active" data-cam-id="1">
         <span class="cam-tab-dot" style="background:var(--accent-orange); box-shadow:none;"></span>
@@ -270,13 +463,18 @@ function renderDeviceTabs(devices, activeId) {
     return;
   }
 
-  const html = devices.map(d => {
+  const html = availableDevices.map(d => {
     const isActive = d.id === activeId;
     const isVert = d.isVertical ? ' (Vertical)' : '';
+    const name = customCamNames[d.id] || d.name;
     return `
-      <div class="cam-tab ${isActive ? 'active' : ''}" data-cam-id="${d.id}" title="Seleccionar Cam ${d.id}">
+      <div class="cam-tab ${isActive ? 'active' : ''}" data-cam-id="${d.id}" title="Seleccionar Cam ${d.id} (${name})">
         <span class="cam-tab-dot"></span>
-        <span class="cam-tab-name">📹 Cam ${d.id}: ${d.name}${isVert}</span>
+        <span class="cam-tab-name">📹 Cam ${d.id}: ${name}${isVert}</span>
+        <div class="cam-tab-actions">
+          <button class="cam-tab-edit-btn" data-cam-id="${d.id}" title="Renombrar o reasignar señal (1, 2, 3...)">✏️</button>
+          <button class="cam-tab-close-btn" data-cam-id="${d.id}" title="Desvincular este dispositivo">✕</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -285,9 +483,30 @@ function renderDeviceTabs(devices, activeId) {
 
   const tabs = cameraSelectorBar.querySelectorAll('.cam-tab');
   tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
+    tab.addEventListener('click', (e) => {
+      if (e.target.closest('.cam-tab-edit-btn') || e.target.closest('.cam-tab-close-btn')) {
+        return;
+      }
       const id = parseInt(tab.getAttribute('data-cam-id'));
       selectCamera(id);
+    });
+  });
+
+  const editBtns = cameraSelectorBar.querySelectorAll('.cam-tab-edit-btn');
+  editBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.getAttribute('data-cam-id'));
+      openEditModal(id);
+    });
+  });
+
+  const closeBtns = cameraSelectorBar.querySelectorAll('.cam-tab-close-btn');
+  closeBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.getAttribute('data-cam-id'));
+      openUnlinkModal(id);
     });
   });
 
@@ -318,11 +537,16 @@ async function pollStatus() {
 let lastActiveDeviceId = null;
 
 function updateUIStatus(data) {
-  isConnected = data.connected;
+  const availableDevices = (data.devices || []).filter(d => !unlinkedCamIds.has(d.id));
+  const hasConnected = availableDevices.length > 0;
+  isConnected = hasConnected && data.connected;
 
-  if (data.connected) {
+  const curDev = availableDevices.find(d => d.id === (data.activeDeviceId || activeCamId)) || availableDevices[0];
+
+  if (isConnected && curDev) {
     statusDot.classList.add('connected');
-    statusText.textContent = `Conectado: ${data.deviceName || 'Móvil'}`;
+    const devName = customCamNames[curDev.id] || curDev.name || data.deviceName || 'Móvil';
+    statusText.textContent = `Conectado: ${devName}`;
     statusText.style.color = 'var(--accent-green)';
 
     if (!isStreamingActive) {
@@ -330,26 +554,75 @@ function updateUIStatus(data) {
       requestAnimationFrame(fetchNextFrame);
     }
 
-    if (data.isVertical || (data.width && data.height && data.width < data.height)) {
-      liveStreamImg.style.aspectRatio = '9/16';
-      liveStreamImg.style.objectFit = 'contain';
-      liveStreamImg.style.maxHeight = '92vh';
-      if (badgeResolution) badgeResolution.textContent = '1080x1920 (Vertical)';
+    // Real Resolution from incoming stream
+    const w = curDev.width || data.width || 0;
+    const h = curDev.height || data.height || 0;
+    const isVert = (curDev.isVertical !== undefined) ? curDev.isVertical : (data.isVertical || (w > 0 && h > 0 && w < h));
+
+    if (w > 0 && h > 0) {
+      if (isVert) {
+        liveStreamImg.style.aspectRatio = `${Math.min(w, h)}/${Math.max(w, h)}`;
+        liveStreamImg.style.objectFit = 'contain';
+        liveStreamImg.style.maxHeight = '92vh';
+        if (badgeResolution) badgeResolution.textContent = `${Math.min(w, h)}x${Math.max(w, h)} (Vertical)`;
+      } else {
+        liveStreamImg.style.aspectRatio = `${Math.max(w, h)}/${Math.min(w, h)}`;
+        liveStreamImg.style.objectFit = 'contain';
+        liveStreamImg.style.maxHeight = '88vh';
+        if (badgeResolution) badgeResolution.textContent = `${Math.max(w, h)}x${Math.min(w, h)}`;
+      }
     } else {
-      liveStreamImg.style.aspectRatio = '16/9';
-      liveStreamImg.style.objectFit = 'contain';
-      liveStreamImg.style.maxHeight = '88vh';
-      if (badgeResolution) badgeResolution.textContent = '1920x1080 (HD 60)';
+      if (badgeResolution) badgeResolution.textContent = '--';
     }
 
-    const latency = Math.round(data.latencyMs || 12);
-    if (badgeLatency) badgeLatency.textContent = `${latency} ms`;
-    if (badgeFps) badgeFps.textContent = `${Math.round(data.fps || 30)} FPS`;
+    // Real Latency (RTT/2 + decode time)
+    const latencyVal = (curDev.latencyMs !== undefined) ? curDev.latencyMs : data.latencyMs;
+    const latency = Math.round(latencyVal || 0);
+    if (badgeLatency) badgeLatency.textContent = latency > 0 ? `${latency} ms` : `-- ms`;
+
+    // Real FPS
+    const fpsVal = (curDev.fps !== undefined) ? curDev.fps : data.fps;
+    const fps = Math.round(fpsVal || 0);
+    if (badgeFps) badgeFps.textContent = `${fps} FPS`;
+
+    // Real Bitrate (calculated from received network bytes)
+    const bitrateVal = (curDev.bitrateKbps !== undefined) ? curDev.bitrateKbps : (data.bitrateKbps || 0);
     if (badgeBitrate) {
-      const mbps = (data.bitrateKbps || 4000) / 1000;
-      badgeBitrate.textContent = `${mbps.toFixed(1)} Mbps`;
+      if (bitrateVal >= 1000) {
+        badgeBitrate.textContent = `${(bitrateVal / 1000).toFixed(2)} Mbps`;
+      } else if (bitrateVal > 0) {
+        badgeBitrate.textContent = `${bitrateVal} Kbps`;
+      } else {
+        badgeBitrate.textContent = `0.0 Mbps`;
+      }
     }
-    if (badgeDevice) badgeDevice.textContent = data.deviceName || 'Móvil';
+
+    if (badgeDevice) badgeDevice.textContent = devName;
+
+    // Real Connection Type (Cable USB vs WiFi) with Sliding Circular Toggle
+    const isDeviceUsb = (curDev.isUsb === true);
+    if (modeToggle) {
+      if (isDeviceUsb) {
+        modeToggle.classList.remove('disabled', 'mode-wifi');
+        modeToggle.classList.add('mode-usb');
+        modeToggle.title = '🔌 Conectado por Cable USB (Baja latencia)';
+        if (knobIcon) knobIcon.textContent = '🔌';
+        if (badgeMode) {
+          badgeMode.textContent = 'USB';
+          badgeMode.style.color = 'var(--accent-cyan)';
+        }
+      } else {
+        modeToggle.classList.remove('mode-usb');
+        modeToggle.classList.add('mode-wifi');
+        const devIp = curDev.ip || data.activeDeviceIp || 'WiFi';
+        modeToggle.title = `📶 Conectado por WiFi (${devIp}). Conéctalo por cable a la PC para cambiar a USB.`;
+        if (knobIcon) knobIcon.textContent = '📶';
+        if (badgeMode) {
+          badgeMode.textContent = 'WiFi';
+          badgeMode.style.color = 'var(--accent-green)';
+        }
+      }
+    }
   } else {
     isStreamingActive = false;
     statusDot.classList.remove('connected');
@@ -358,42 +631,44 @@ function updateUIStatus(data) {
     placeholderBox.style.display = 'flex';
     liveStreamImg.style.display = 'none';
 
-    if (badgeResolution) badgeResolution.textContent = '1080p';
+    if (badgeResolution) badgeResolution.textContent = '--';
     if (badgeLatency) badgeLatency.textContent = '-- ms';
     if (badgeFps) badgeFps.textContent = '-- FPS';
     if (badgeBitrate) badgeBitrate.textContent = '-- Mbps';
     if (badgeDevice) badgeDevice.textContent = 'Sin conexión';
+
+    if (modeToggle) {
+      const usbAvailable = (data.usbConnected === true);
+      if (usbAvailable) {
+        modeToggle.classList.remove('disabled', 'mode-wifi');
+        modeToggle.classList.add('mode-usb');
+        modeToggle.title = '🔌 Cable USB detectado en la PC';
+        if (knobIcon) knobIcon.textContent = '🔌';
+        if (badgeMode) badgeMode.textContent = 'USB';
+      } else {
+        modeToggle.classList.remove('mode-usb');
+        modeToggle.classList.add('mode-wifi');
+        modeToggle.title = 'Buscando dispositivos por WiFi y USB...';
+        if (knobIcon) knobIcon.textContent = '📶';
+        if (badgeMode) badgeMode.textContent = 'WiFi';
+      }
+    }
   }
 
-  // Detect active device change from server
+  // Detect active device change from server or fallback if current was unlinked
   const serverActiveId = data.activeDeviceId || 1;
-  if (serverActiveId !== lastActiveDeviceId) {
+  if (!unlinkedCamIds.has(serverActiveId) && serverActiveId !== lastActiveDeviceId) {
     lastActiveDeviceId = serverActiveId;
     activeCamId = serverActiveId;
+    applyActiveConfigToUI(false);
+  } else if (unlinkedCamIds.has(activeCamId) && availableDevices.length > 0) {
+    activeCamId = availableDevices[0].id;
+    lastActiveDeviceId = activeCamId;
     applyActiveConfigToUI(false);
   }
 
   // Update Multi-Camera Tabs
-  renderDeviceTabs(data.devices || [], serverActiveId);
-
-  // Handle USB Cable Connection detection
-  const usbAvailable = (data.usbConnected === true);
-  if (tabUsb) {
-    if (!usbAvailable) {
-      tabUsb.disabled = true;
-      tabUsb.classList.add('disabled');
-      tabUsb.title = 'Cable USB no detectado. Conecta el teléfono por USB para usar este modo.';
-      if (tabUsb.classList.contains('active')) {
-        tabWifi.classList.add('active');
-        tabUsb.classList.remove('active');
-        if (badgeMode) badgeMode.textContent = 'Wi-Fi';
-      }
-    } else {
-      tabUsb.disabled = false;
-      tabUsb.classList.remove('disabled');
-      tabUsb.title = '🔌 Cable USB conectado y listo';
-    }
-  }
+  renderDeviceTabs(data.devices || [], activeCamId);
 }
 
 let currentBlobUrl = null;
@@ -439,22 +714,19 @@ async function fetchNextFrame() {
 
 // Setup Interactive Events
 function setupEvents() {
-  // Tabs (Header Toggle)
-  if (tabUsb && tabWifi) {
-    tabUsb.addEventListener('click', () => {
-      if (tabUsb.disabled || tabUsb.classList.contains('disabled')) {
-        alert('Cable USB no detectado.\n\nPor favor, conecta tu teléfono a la computadora con un cable USB para usar este modo.');
-        return;
+  // Circular Sliding Toggle (USB / WiFi)
+  if (modeToggle) {
+    modeToggle.addEventListener('click', () => {
+      const curDev = (lastDevicesList || []).find(d => d.id === activeCamId);
+      if (curDev) {
+        if (!curDev.isUsb) {
+          showToast(`⚠️ ${curDev.name || 'Este dispositivo'} está conectado por WiFi (${curDev.ip || 'LAN'}). Conéctalo por cable USB a la PC para usar modo USB.`);
+        } else {
+          showToast('ℹ️ El dispositivo actual está transmitiendo por Cable USB.');
+        }
+      } else {
+        showToast('ℹ️ Esperando conexión de dispositivos...');
       }
-      tabUsb.classList.add('active');
-      tabWifi.classList.remove('active');
-      if (badgeMode) badgeMode.textContent = 'USB';
-    });
-
-    tabWifi.addEventListener('click', () => {
-      tabWifi.classList.add('active');
-      tabUsb.classList.remove('active');
-      if (badgeMode) badgeMode.textContent = 'Wi-Fi';
     });
   }
 
@@ -608,6 +880,28 @@ function setupEvents() {
       }
     });
   }
+
+  // Force Rescan / Device Discovery Button
+  const btnRescan = document.getElementById('btn-rescan');
+  if (btnRescan) {
+    btnRescan.addEventListener('click', async () => {
+      const icon = btnRescan.querySelector('.rescan-icon');
+      if (icon) icon.classList.add('spinning');
+      unlinkedCamIds.clear();
+      showToast('Buscando dispositivos USB y Wi-Fi...');
+      try {
+        await fetch(`${API_BASE}/api/rescan`, { method: 'POST' });
+      } catch (e) {}
+      setTimeout(() => {
+        if (icon) icon.classList.remove('spinning');
+        showToast('✓ Búsqueda de dispositivos completada');
+        pollStatus();
+      }, 800);
+    });
+  }
+
+  // Initialize modal dialogs
+  setupModals();
 
   // Initial load
   applyActiveConfigToUI(false);

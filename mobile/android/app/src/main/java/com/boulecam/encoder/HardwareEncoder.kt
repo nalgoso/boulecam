@@ -53,6 +53,8 @@ class HardwareEncoder(
         }
     }
 
+    @Volatile private var isSuspended = false
+
     fun requestKeyFrame() {
         val bundle = Bundle().apply {
             putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
@@ -60,11 +62,28 @@ class HardwareEncoder(
         mediaCodec?.setParameters(bundle)
     }
 
+    fun setSuspended(suspend: Boolean) {
+        isSuspended = suspend
+        try {
+            val bundle = Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_SUSPEND, if (suspend) 1 else 0)
+            }
+            mediaCodec?.setParameters(bundle)
+        } catch (ignored: Exception) {}
+    }
+
     private fun drainEncoder() {
         val bufferInfo = MediaCodec.BufferInfo()
         val codec = mediaCodec ?: return
 
         while (isRunning) {
+            if (isSuspended) {
+                try {
+                    Thread.sleep(100)
+                } catch (ignored: Exception) {}
+                continue
+            }
+
             val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 1000) // 1ms max latency
 
             if (outputBufferIndex >= 0) {

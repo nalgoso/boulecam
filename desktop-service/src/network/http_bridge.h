@@ -20,8 +20,10 @@ class TcpReceiver;
 struct DeviceInfo {
     int id = 0;
     std::string name = "Móvil";
-    uint32_t width = 1920;
-    uint32_t height = 1080;
+    std::string ip = "";
+    bool isUsb = false;
+    uint32_t width = 0;
+    uint32_t height = 0;
     bool isVertical = false;
     bool isDimmed = false;
     float fps = 0.0f;
@@ -34,8 +36,10 @@ struct SystemStatus {
     bool usbConnected = false;
     int activeDeviceId = 1;
     std::string deviceName = "Desconectado";
-    uint32_t width = 1920;
-    uint32_t height = 1080;
+    std::string deviceIp = "";
+    bool isUsb = false;
+    uint32_t width = 0;
+    uint32_t height = 0;
     bool isVertical = false;
     bool isDimmed = false;
     float fps = 0.0f;
@@ -54,9 +58,18 @@ public:
 
     void UpdateStats(int deviceId, float fps, float latencyMs, uint32_t bitrateKbps);
     void SetUsbStatus(bool connected);
-    void SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height);
+    void SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip = "", bool isUsb = false);
     void SetDeviceDimState(int deviceId, bool isDimmed);
     void RemoveDevice(int deviceId);
+    bool DisconnectDevice(int deviceId);
+    bool SwapDevices(int camA, int camB);
+    bool ReassignDevice(int fromId, int toId);
+    bool RenameDevice(int camId, const std::string& newName);
+
+    using RescanCallback = std::function<void()>;
+    void SetRescanCallback(RescanCallback cb) { m_rescanCallback = cb; }
+    void TriggerRescan();
+
     void UpdateDecodedFrame(int deviceId, const uint8_t* pDecodedData, uint32_t dataSize, uint32_t width, uint32_t height, BouleCamPixelFormat pixelFormat, uint16_t rotation = 0);
 
     struct DeviceTransform {
@@ -76,6 +89,7 @@ private:
     void ServerWorker();
     void HandleClient(SOCKET clientSock);
 
+    RescanCallback m_rescanCallback;
     TcpReceiver& m_receiver;
     uint16_t m_port;
     SOCKET m_listenSocket;
