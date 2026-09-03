@@ -63,13 +63,11 @@ class HardwareEncoder(
     }
 
     fun setSuspended(suspend: Boolean) {
+        val wasSuspended = isSuspended
         isSuspended = suspend
-        try {
-            val bundle = Bundle().apply {
-                putInt(MediaCodec.PARAMETER_KEY_SUSPEND, if (suspend) 1 else 0)
-            }
-            mediaCodec?.setParameters(bundle)
-        } catch (ignored: Exception) {}
+        if (wasSuspended && !suspend) {
+            requestKeyFrame()
+        }
     }
 
     private fun drainEncoder() {
@@ -77,19 +75,20 @@ class HardwareEncoder(
         val codec = mediaCodec ?: return
 
         while (isRunning) {
-            if (isSuspended) {
-                try {
-                    Thread.sleep(100)
-                } catch (ignored: Exception) {}
-                continue
+            val outputBufferIndex = try {
+                codec.dequeueOutputBuffer(bufferInfo, 2000)
+            } catch (e: Exception) {
+                -1
             }
 
-            val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 1000) // 1ms max latency
-
             if (outputBufferIndex >= 0) {
-                val outputBuffer: ByteBuffer = codec.getOutputBuffer(outputBufferIndex) ?: continue
+                val outputBuffer: ByteBuffer? = try {
+                    codec.getOutputBuffer(outputBufferIndex)
+                } catch (e: Exception) {
+                    null
+                }
 
-                if (bufferInfo.size > 0) {
+                if (outputBuffer != null && bufferInfo.size > 0) {
                     outputBuffer.position(bufferInfo.offset)
                     outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
 
@@ -112,10 +111,14 @@ class HardwareEncoder(
                         chunk
                     }
 
-                    onFrameEncoded(isKeyFrame || isConfig, bufferInfo.presentationTimeUs, finalPayload)
+                    if (!isSuspended) {
+                        onFrameEncoded(isKeyFrame || isConfig, bufferInfo.presentationTimeUs, finalPayload)
+                    }
                 }
 
-                codec.releaseOutputBuffer(outputBufferIndex, false)
+                try {
+                    codec.releaseOutputBuffer(outputBufferIndex, false)
+                } catch (ignored: Exception) {}
             }
         }
     }
