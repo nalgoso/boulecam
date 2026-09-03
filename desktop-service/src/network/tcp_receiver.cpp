@@ -322,24 +322,24 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
             {
                 std::lock_guard<std::mutex> lock(m_clientsMutex);
                 for (auto& pair : m_clients) {
+                    bool isUsb = (clientIp == "127.0.0.1" && pair.second.ip == "127.0.0.1");
                     bool sameDev = (!devName.empty() && pair.second.deviceName == devName);
-                    bool sameWifiIp = (!clientIp.empty() && clientIp != "127.0.0.1" && pair.second.ip == clientIp);
+                    bool sameWifiIp = (!isUsb && pair.second.ip == clientIp);
 
-                    // Reconnect if it's the same physical phone (by device name) or same Wi-Fi IP
-                    if (sameDev || sameWifiIp) {
+                    // Reconnect only if it's genuinely the same device
+                    if (sameDev && (isUsb || sameWifiIp)) {
                         assignedId = pair.first;
                         // Close stale socket if different
                         if (pair.second.socket != clientSocket && pair.second.socket != INVALID_SOCKET) {
                             closesocket(pair.second.socket);
                         }
                         pair.second.socket = clientSocket;
-                        pair.second.ip = clientIp; // Updates interface seamlessly (USB <-> WiFi)
                         pair.second.port = clientPort;
                         pair.second.deviceName = devName;
                         pair.second.deviceIdRef = deviceIdRef;
                         deviceIdRef->store(assignedId);
                         std::cout << "[TcpReceiver] Reconnected [Device " << assignedId << "] (" << devName 
-                                  << " on " << clientIp << ":" << clientPort << ")" << std::endl;
+                                  << " from " << clientIp << ":" << clientPort << ")" << std::endl;
                         break;
                     }
                 }
@@ -442,18 +442,11 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
     // Client disconnected or timed out: only erase if this socket is still the active one
     int finalDevId = deviceIdRef->load();
     if (finalDevId > 0) {
-        bool wasErased = false;
-        {
-            std::lock_guard<std::mutex> lock(m_clientsMutex);
-            if (m_clients.find(finalDevId) != m_clients.end() && m_clients[finalDevId].socket == clientSocket) {
-                m_clients.erase(finalDevId);
-                m_activeClientCount--;
-                wasErased = true;
-                std::cout << "[TcpReceiver] Device " << finalDevId << " disconnected." << std::endl;
-            }
-        }
-        if (wasErased && m_disconnectCallback) {
-            m_disconnectCallback(finalDevId);
+        std::lock_guard<std::mutex> lock(m_clientsMutex);
+        if (m_clients.find(finalDevId) != m_clients.end() && m_clients[finalDevId].socket == clientSocket) {
+            m_clients.erase(finalDevId);
+            m_activeClientCount--;
+            std::cout << "[TcpReceiver] Device " << finalDevId << " disconnected." << std::endl;
         }
     }
     closesocket(clientSocket);

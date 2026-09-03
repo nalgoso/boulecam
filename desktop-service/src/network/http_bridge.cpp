@@ -1,7 +1,5 @@
 #include "http_bridge.h"
 #include "tcp_receiver.h"
-#include "../audio/audio_dsp_pipeline.h"
-#include "../audio/wasapi_monitor.h"
 #include <iostream>
 #include <sstream>
 #include <iphlpapi.h>
@@ -269,41 +267,6 @@ void HttpControlBridge::SetDeviceDimState(int deviceId, bool isDimmed) {
     if (deviceId == m_activeDeviceId.load() || m_devices.size() <= 1) {
         m_status.isDimmed = isDimmed;
     }
-}
-
-void HttpControlBridge::SetDeviceTelemetry(
-    int deviceId, float batteryLevel, float temperatureC, uint8_t lensesMask,
-    float currentZoom, uint8_t currentLens, uint8_t micChannels, uint8_t micCapsule, bool micBeamforming
-) {
-    std::lock_guard<std::mutex> lock(m_statusMutex);
-    if (m_devices.find(deviceId) != m_devices.end()) {
-        m_devices[deviceId].batteryLevel = batteryLevel;
-        m_devices[deviceId].temperatureC = temperatureC;
-        if (lensesMask > 0) m_devices[deviceId].lensesMask = lensesMask;
-        if (currentZoom > 0.0f) m_devices[deviceId].zoomRatio = currentZoom;
-        m_devices[deviceId].currentLens = currentLens;
-        m_devices[deviceId].micChannels = micChannels;
-        m_devices[deviceId].micCapsule = micCapsule;
-        m_devices[deviceId].micBeamforming = micBeamforming;
-    }
-    if (deviceId == m_activeDeviceId.load() || m_devices.size() <= 1) {
-        m_status.batteryLevel = batteryLevel;
-        m_status.temperatureC = temperatureC;
-        if (lensesMask > 0) m_status.lensesMask = lensesMask;
-        if (currentZoom > 0.0f) m_status.zoomRatio = currentZoom;
-        m_status.currentLens = currentLens;
-        m_status.micChannels = micChannels;
-        m_status.micCapsule = micCapsule;
-        m_status.micBeamforming = micBeamforming;
-    }
-}
-
-void HttpControlBridge::UpdateAudioMeters(float prePeak, float preRms, float postPeak, float postRms) {
-    std::lock_guard<std::mutex> lock(m_audioMeterMutex);
-    m_prePeakDb = prePeak;
-    m_preRmsDb = preRms;
-    m_postPeakDb = postPeak;
-    m_postRmsDb = postRms;
 }
 
 void HttpControlBridge::RemoveDevice(int deviceId) {
@@ -785,14 +748,6 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                  << "\"fps\":" << m_status.fps << ","
                  << "\"latencyMs\":" << m_status.latencyMs << ","
                  << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
-                 << "\"batteryLevel\":" << m_status.batteryLevel << ","
-                 << "\"temperatureC\":" << m_status.temperatureC << ","
-                 << "\"lensesMask\":" << (int)m_status.lensesMask << ","
-                 << "\"zoomRatio\":" << m_status.zoomRatio << ","
-                 << "\"currentLens\":" << (int)m_status.currentLens << ","
-                 << "\"micChannels\":" << (int)m_status.micChannels << ","
-                 << "\"micCapsule\":" << (int)m_status.micCapsule << ","
-                 << "\"micBeamforming\":" << (m_status.micBeamforming ? "true" : "false") << ","
                  << "\"localIps\":[";
             for (size_t i = 0; i < m_status.localIps.size(); ++i) {
                 json << "\"" << m_status.localIps[i] << "\"";
@@ -815,14 +770,6 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                      << "\"fps\":" << d.fps << ","
                      << "\"latencyMs\":" << d.latencyMs << ","
                      << "\"bitrateKbps\":" << d.bitrateKbps << ","
-                     << "\"batteryLevel\":" << d.batteryLevel << ","
-                     << "\"temperatureC\":" << d.temperatureC << ","
-                     << "\"lensesMask\":" << (int)d.lensesMask << ","
-                     << "\"zoomRatio\":" << d.zoomRatio << ","
-                     << "\"currentLens\":" << (int)d.currentLens << ","
-                     << "\"micChannels\":" << (int)d.micChannels << ","
-                     << "\"micCapsule\":" << (int)d.micCapsule << ","
-                     << "\"micBeamforming\":" << (d.micBeamforming ? "true" : "false") << ","
                      << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
                      << "}";
                 if (++idx < m_devices.size()) json << ",";
@@ -1036,183 +983,6 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             closesocket(clientSock);
             return;
         }
-    }
-
-    // 7. Audio Meter API
-    if (firstLine.find("GET /api/audio_meter") != std::string::npos) {
-        float preP, preR, postP, postR;
-        {
-            std::lock_guard<std::mutex> lock(m_audioMeterMutex);
-            preP = m_prePeakDb; preR = m_preRmsDb;
-            postP = m_postPeakDb; postR = m_postRmsDb;
-        }
-        std::ostringstream json;
-        json << "{"
-             << "\"prePeakDb\":" << preP << ","
-             << "\"preRmsDb\":" << preR << ","
-             << "\"postPeakDb\":" << postP << ","
-             << "\"postRmsDb\":" << postR
-             << "}";
-        std::string body = json.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 8. Audio Output Devices (WASAPI)
-    if (firstLine.find("GET /api/audio_devices") != std::string::npos) {
-        auto devices = WasapiMonitor::EnumerateOutputDevices();
-        std::ostringstream json;
-        json << "[";
-        for (size_t i = 0; i < devices.size(); ++i) {
-            json << "{\"id\":\"" << devices[i].id << "\",\"name\":\"" << devices[i].name << "\",\"isDefault\":" << (devices[i].isDefault ? "true" : "false") << "}";
-            if (i + 1 < devices.size()) json << ",";
-        }
-        json << "]";
-        std::string body = json.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 9. Get Audio DSP Config
-    if (firstLine.find("GET /api/audio_config") != std::string::npos) {
-        AudioDspConfig cfg{};
-        if (m_pDsp) cfg = m_pDsp->GetConfig();
-        float vol = 0.8f; bool muted = false;
-        if (m_pMonitor) {
-            vol = m_pMonitor->GetVolume();
-            muted = m_pMonitor->IsMuted();
-        }
-        std::ostringstream json;
-        json << "{"
-             << "\"beamformingEnabled\":" << (cfg.beamformingEnabled ? "true" : "false") << ","
-             << "\"rnnoiseEnabled\":" << (cfg.rnnoiseEnabled ? "true" : "false") << ","
-             << "\"gateEnabled\":" << (cfg.gateEnabled ? "true" : "false") << ","
-             << "\"gateThresholdDb\":" << cfg.gateThresholdDb << ","
-             << "\"compressorEnabled\":" << (cfg.compressorEnabled ? "true" : "false") << ","
-             << "\"compThresholdDb\":" << cfg.compThresholdDb << ","
-             << "\"compRatio\":" << cfg.compRatio << ","
-             << "\"compMakeupDb\":" << cfg.compMakeupDb << ","
-             << "\"limiterEnabled\":" << (cfg.limiterEnabled ? "true" : "false") << ","
-             << "\"monitorVolume\":" << vol << ","
-             << "\"monitorMuted\":" << (muted ? "true" : "false")
-             << "}";
-        std::string body = json.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 10. Update Audio DSP Config & Monitor (GET or POST)
-    if (firstLine.find("/api/audio_set") != std::string::npos || firstLine.find("/api/audio_config") != std::string::npos) {
-        std::string queryAndBody = requestStr;
-        auto parseBool = [&](const std::string& key, bool current) -> bool {
-            size_t p = queryAndBody.find(key + "=");
-            if (p == std::string::npos) {
-                p = queryAndBody.find("\"" + key + "\"");
-                if (p == std::string::npos) return current;
-                p = queryAndBody.find(":", p);
-                if (p == std::string::npos) return current;
-                p++;
-            } else {
-                p += key.size() + 1;
-            }
-            while (p < queryAndBody.size() && (queryAndBody[p] == ' ' || queryAndBody[p] == '"')) p++;
-            if (queryAndBody.substr(p, 4) == "true" || queryAndBody.substr(p, 1) == "1") return true;
-            if (queryAndBody.substr(p, 5) == "false" || queryAndBody.substr(p, 1) == "0") return false;
-            return current;
-        };
-
-        auto parseFloat = [&](const std::string& key, float current) -> float {
-            size_t p = queryAndBody.find(key + "=");
-            if (p == std::string::npos) {
-                p = queryAndBody.find("\"" + key + "\"");
-                if (p == std::string::npos) return current;
-                p = queryAndBody.find(":", p);
-                if (p == std::string::npos) return current;
-                p++;
-            } else {
-                p += key.size() + 1;
-            }
-            while (p < queryAndBody.size() && (queryAndBody[p] == ' ' || queryAndBody[p] == '"')) p++;
-            try {
-                return std::stof(queryAndBody.substr(p));
-            } catch (...) {
-                return current;
-            }
-        };
-
-        if (m_pDsp) {
-            AudioDspConfig cfg = m_pDsp->GetConfig();
-            cfg.beamformingEnabled = parseBool("beamforming", cfg.beamformingEnabled);
-            cfg.beamformingEnabled = parseBool("beamformingEnabled", cfg.beamformingEnabled);
-            cfg.rnnoiseEnabled = parseBool("rnnoise", cfg.rnnoiseEnabled);
-            cfg.rnnoiseEnabled = parseBool("rnnoiseEnabled", cfg.rnnoiseEnabled);
-            cfg.gateEnabled = parseBool("gate", cfg.gateEnabled);
-            cfg.gateEnabled = parseBool("gateEnabled", cfg.gateEnabled);
-            cfg.gateThresholdDb = parseFloat("gateThresh", cfg.gateThresholdDb);
-            cfg.gateThresholdDb = parseFloat("gateThresholdDb", cfg.gateThresholdDb);
-            cfg.compressorEnabled = parseBool("comp", cfg.compressorEnabled);
-            cfg.compressorEnabled = parseBool("compressorEnabled", cfg.compressorEnabled);
-            cfg.compThresholdDb = parseFloat("compThresh", cfg.compThresholdDb);
-            cfg.compThresholdDb = parseFloat("compThresholdDb", cfg.compThresholdDb);
-            cfg.compRatio = parseFloat("compRatio", cfg.compRatio);
-            cfg.compMakeupDb = parseFloat("compMakeup", cfg.compMakeupDb);
-            cfg.compMakeupDb = parseFloat("compMakeupDb", cfg.compMakeupDb);
-            m_pDsp->SetConfig(cfg);
-        }
-
-        if (m_pMonitor) {
-            if (queryAndBody.find("monitorMute") != std::string::npos) {
-                m_pMonitor->SetMute(parseBool("monitorMute", m_pMonitor->IsMuted()));
-            }
-            if (queryAndBody.find("monitorVol") != std::string::npos) {
-                m_pMonitor->SetVolume(parseFloat("monitorVol", m_pMonitor->GetVolume()));
-            }
-            if (queryAndBody.find("monitorStart=1") != std::string::npos || queryAndBody.find("\"monitorEnabled\":true") != std::string::npos) {
-                m_pMonitor->Start();
-            } else if (queryAndBody.find("monitorStart=0") != std::string::npos || queryAndBody.find("\"monitorEnabled\":false") != std::string::npos) {
-                m_pMonitor->Stop();
-            }
-        }
-
-        std::string respBody = "{\"status\":\"ok\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << respBody.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << respBody;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
     }
 
     // Default 404

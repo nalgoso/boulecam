@@ -23,7 +23,7 @@
     <div class="header-toggle-container">
       <div class="sliding-toggle-wrapper mode-wifi" id="mode-toggle" title="Modo de conexión del dispositivo" role="button" tabindex="0">
         <span class="sliding-toggle-label label-usb">USB</span>
-        <div class="sliding-track">
+        <div class="sliding-toggle-rail">
           <div class="sliding-toggle-knob" id="toggle-knob">
             <span class="knob-icon" id="knob-icon">📶</span>
           </div>
@@ -33,27 +33,6 @@
     </div>
 
     <div class="header-status">
-      <!-- Live Telemetry: Battery & Thermal Temperature -->
-      <div class="telemetry-badges-container" id="telemetry-badges" style="display:none; align-items:center; gap:8px;">
-        <div class="telemetry-badge" id="badge-battery" title="Nivel de batería del teléfono móvil">
-          <span id="battery-icon">🔋</span>
-          <span id="battery-val">--%</span>
-        </div>
-        <div class="telemetry-badge" id="badge-temp" title="Temperatura térmica del teléfono móvil">
-          <span id="temp-icon">🌡️</span>
-          <span id="temp-val">--°C</span>
-        </div>
-      </div>
-
-      <!-- Windows Native Virtual Camera Toggle / Install -->
-      <button class="btn-vcam" id="btn-vcam" title="Activar / Instalar Cámara Virtual de Windows para Zoom, Meet, Teams y Discord">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-          <path d="M23 7l-7 5 7 5V7z" />
-          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-        </svg>
-        <span id="vcam-btn-text">Cámara Virtual</span>
-      </button>
-
       <button class="btn-rescan" id="btn-rescan" title="Forzar actualización y buscar dispositivos USB y Wi-Fi">
         <svg class="rescan-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
@@ -167,34 +146,6 @@
           <span>🎛️ Ajustes de Cámara</span>
         </div>
 
-        <!-- Lens Switcher (Main, Ultra-Wide, Front, Tele/Macro) -->
-        <div class="control-row" id="lens-control-row">
-          <div class="control-label">
-            <span>Lente Activa</span>
-            <span class="control-value" id="val-lens-name">Principal</span>
-          </div>
-          <div class="lens-button-group" id="lens-button-group">
-            <button class="lens-btn active" data-lens="0" id="btn-lens-back">📷 Principal (1x)</button>
-            <button class="lens-btn" data-lens="2" id="btn-lens-ultra" style="display:none;">📐 Gran Angular (0.5x)</button>
-            <button class="lens-btn" data-lens="3" id="btn-lens-tele" style="display:none;">🔍 Macro / Tele</button>
-            <button class="lens-btn" data-lens="1" id="btn-lens-front">🤳 Frontal</button>
-          </div>
-        </div>
-
-        <!-- Smooth Digital Zoom Slider -->
-        <div class="control-row">
-          <div class="control-label">
-            <span>Zoom Digital Suave</span>
-            <span class="control-value" id="val-zoom">1.0x</span>
-          </div>
-          <div style="display:flex; align-items:center; gap:8px;">
-            <button class="zoom-quick-btn active" id="btn-zoom-1x">1x</button>
-            <input type="range" id="slider-zoom" min="10" max="80" value="10" step="1" style="flex:1;">
-            <button class="zoom-quick-btn" id="btn-zoom-2x">2x</button>
-            <button class="zoom-quick-btn" id="btn-zoom-5x">5x</button>
-          </div>
-        </div>
-
         <!-- ISO -->
         <div class="control-row">
           <div class="control-label">
@@ -238,147 +189,6 @@
             <button class="pill-btn active" id="btn-af-toggle" style="padding:2px 8px; font-size:0.75rem;">AF Auto</button>
           </div>
           <input type="range" id="slider-focus" min="0" max="100" value="0" disabled>
-        </div>
-
-        <!-- Professional Studio Audio & DSP Suite Card -->
-        <div class="audio-suite-card glass">
-          <div class="audio-card-header">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-size:1.05rem;">🎙️</span>
-              <span style="font-size:0.82rem; font-weight:700; color:#fff; text-transform:uppercase; letter-spacing:0.5px;">Audio de Estudio & DSP</span>
-            </div>
-            <span class="badge-tag" id="audio-capsule-badge" style="color:var(--accent-green);">Mono</span>
-          </div>
-
-          <!-- Dual High-Precision VU Meter (Peak & RMS) -->
-          <div class="vu-meter-section">
-            <div class="vu-meter-row">
-              <div class="vu-label-col">
-                <span class="vu-tag">ENT</span>
-                <span class="vu-db-text" id="meter-pre-db">-∞ dB</span>
-              </div>
-              <div class="vu-track">
-                <div class="vu-fill-rms" id="vu-pre-rms"></div>
-                <div class="vu-fill-peak" id="vu-pre-peak"></div>
-                <div class="vu-clip-led" id="vu-pre-clip"></div>
-              </div>
-            </div>
-
-            <div class="vu-meter-row" style="margin-top:6px;">
-              <div class="vu-label-col">
-                <span class="vu-tag" style="color:var(--accent-green);">DSP</span>
-                <span class="vu-db-text" id="meter-post-db">-∞ dB</span>
-              </div>
-              <div class="vu-track">
-                <div class="vu-fill-rms" id="vu-post-rms"></div>
-                <div class="vu-fill-peak" id="vu-post-peak"></div>
-                <div class="vu-clip-led" id="vu-post-clip"></div>
-              </div>
-            </div>
-
-            <div class="vu-scale-ticks">
-              <span>-48</span>
-              <span>-36</span>
-              <span>-24</span>
-              <span>-12</span>
-              <span>-6</span>
-              <span>-3</span>
-              <span>0 dB</span>
-            </div>
-          </div>
-
-          <!-- Capsule & Microphone Hardware Controls -->
-          <div class="audio-controls-block">
-            <div class="audio-subhead">Cápsula de Micrófono (Móvil)</div>
-            <div class="mic-capsule-selector">
-              <button class="capsule-btn active" id="btn-capsule-0" data-capsule="0">⬇️ Inferior</button>
-              <button class="capsule-btn" id="btn-capsule-2" data-capsule="2">📷 Posterior</button>
-              <button class="capsule-btn" id="btn-capsule-3" data-capsule="3">🤳 Frontal</button>
-            </div>
-
-            <div class="audio-toggle-grid">
-              <label class="audio-switch-label">
-                <input type="checkbox" id="chk-mic-stereo">
-                <span class="slider-toggle-round"></span>
-                <span>Estéreo Real</span>
-              </label>
-
-              <label class="audio-switch-label">
-                <input type="checkbox" id="chk-beamforming">
-                <span class="slider-toggle-round"></span>
-                <span>Beamforming (Doble Mic)</span>
-              </label>
-            </div>
-          </div>
-
-          <!-- DSP Voice Filters Section -->
-          <div class="audio-controls-block" style="border-top:1px solid rgba(255,255,255,0.07); padding-top:10px;">
-            <div class="audio-subhead" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>Filtros DSP de Estudio (C++)</span>
-              <span class="dsp-indicator active" id="badge-rnnoise">RNNoise IA</span>
-            </div>
-
-            <div class="audio-toggle-row">
-              <label class="audio-switch-label">
-                <input type="checkbox" id="chk-rnnoise" checked>
-                <span class="slider-toggle-round"></span>
-                <span>Cancelación Neural (RNNoise)</span>
-              </label>
-            </div>
-
-            <!-- Noise Gate -->
-            <div class="dsp-param-group">
-              <div class="audio-toggle-row" style="margin-bottom:4px;">
-                <label class="audio-switch-label">
-                  <input type="checkbox" id="chk-gate" checked>
-                  <span class="slider-toggle-round"></span>
-                  <span>Compuerta de Ruido (Gate)</span>
-                </label>
-                <span class="param-val" id="val-gate-thresh">-45 dB</span>
-              </div>
-              <input type="range" id="slider-gate-thresh" min="-60" max="-15" value="-45" step="1">
-            </div>
-
-            <!-- Compressor -->
-            <div class="dsp-param-group" style="margin-top:8px;">
-              <div class="audio-toggle-row" style="margin-bottom:4px;">
-                <label class="audio-switch-label">
-                  <input type="checkbox" id="chk-comp" checked>
-                  <span class="slider-toggle-round"></span>
-                  <span>Compresor & Limitador (-0.5 dB)</span>
-                </label>
-                <span class="param-val" id="val-comp-thresh">-20 dB</span>
-              </div>
-              <input type="range" id="slider-comp-thresh" min="-35" max="-5" value="-20" step="1">
-              <div class="comp-sliders-subrow">
-                <div class="subparam">
-                  <span class="subparam-label">Ratio: <b id="val-comp-ratio">3.0:1</b></span>
-                  <input type="range" id="slider-comp-ratio" min="1.5" max="8.0" value="3.0" step="0.5">
-                </div>
-                <div class="subparam">
-                  <span class="subparam-label">Ganancia: <b id="val-comp-gain">+3 dB</b></span>
-                  <input type="range" id="slider-comp-gain" min="0" max="18" value="3" step="1">
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Local Realtime WASAPI Monitoring (Headphones) -->
-          <div class="audio-controls-block" style="border-top:1px solid rgba(255,255,255,0.07); padding-top:10px;">
-            <div class="audio-subhead" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>🎧 Escucha Local (WASAPI PC)</span>
-              <button class="btn-audio-mute" id="btn-monitor-mute" title="Silenciar auriculares">🔊</button>
-            </div>
-            <div class="audio-toggle-row" style="margin-top:6px;">
-              <label class="audio-switch-label">
-                <input type="checkbox" id="chk-monitor-enable">
-                <span class="slider-toggle-round"></span>
-                <span>Monitorear en Auriculares</span>
-              </label>
-              <span class="param-val" id="val-monitor-vol">80%</span>
-            </div>
-            <input type="range" id="slider-monitor-vol" min="0" max="100" value="80" step="1">
-          </div>
         </div>
 
         <!-- Dedicated OBS Studio Integration Card -->

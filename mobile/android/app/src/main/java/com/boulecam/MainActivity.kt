@@ -102,9 +102,8 @@ class MainActivity : AppCompatActivity() {
         BouleCamStreamService.start(this)
 
         initViews()
-        val hasUsbCable = checkUsbCableState()
-        isUsbMode = hasUsbCable
         setupUsbReceiver()
+        checkUsbCableState()
         setupOrientationListener()
 
         if (checkCameraPermission()) {
@@ -167,28 +166,24 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(usbReceiver, filter)
     }
 
-    private fun checkUsbCableState(): Boolean {
+    private fun checkUsbCableState() {
         try {
             val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
-            val isPlugged = (plugged == BatteryManager.BATTERY_PLUGGED_USB)
-            isUsbCableConnected = isPlugged
-            return isPlugged
+            val isPlugged = (plugged == BatteryManager.BATTERY_PLUGGED_USB || plugged == BatteryManager.BATTERY_PLUGGED_AC)
+            updateUsbState(isPlugged)
         } catch (e: Exception) {
-            isUsbCableConnected = false
-            return false
+            updateUsbState(false)
         }
     }
 
     private fun updateUsbState(connected: Boolean) {
-        if (isUsbCableConnected == connected) return
-        val wasConnected = isUsbCableConnected
         isUsbCableConnected = connected
         runOnUiThread {
-            if (wasConnected && !connected && isUsbMode) {
+            if (!connected && isUsbMode) {
                 // If in USB mode and cable unplugs, auto fallback to Wi-Fi
                 setConnectionMode(usb = false)
-                Toast.makeText(this@MainActivity, "Cable USB desconectado. Cambiando a Wi-Fi...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Cable USB desconectado. Cambiando a Wi-Fi...", Toast.LENGTH_LONG).show()
             }
             updateConnectionButtonsUI()
         }
@@ -515,61 +510,6 @@ class MainActivity : AppCompatActivity() {
         return "$manufacturer ${android.os.Build.MODEL}"
     }
 
-    private var telemetryTimer: java.util.Timer? = null
-
-    private fun getBatteryInfo(): Pair<Float, Float> {
-        return try {
-            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-            val bIntent = registerReceiver(null, filter)
-            val level = bIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-            val scale = bIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-            val pct = if (level >= 0 && scale > 0) (level / scale.toFloat()) * 100f else -1.0f
-            val tempRaw = bIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
-            val tempC = tempRaw / 10.0f
-            pct to tempC
-        } catch (e: Exception) {
-            -1.0f to 0.0f
-        }
-    }
-
-    private fun startTelemetryTimer() {
-        stopTelemetryTimer()
-        telemetryTimer = java.util.Timer().apply {
-            scheduleAtFixedRate(object : java.util.TimerTask() {
-                override fun run() {
-                    if (sender?.isConnected() == true) {
-                        val (bat, temp) = getBatteryInfo()
-                        val mask = cameraPipeline?.getLensesMask() ?: 3
-                        val zoom = cameraPipeline?.getCurrentZoom() ?: 1.0f
-                        val lens = cameraPipeline?.getCurrentLens() ?: 0
-                        val channels = audioPipeline?.getChannels() ?: 1
-                        val capsule = audioPipeline?.getCapsule() ?: 0
-                        val beamforming = audioPipeline?.isBeamformingActive() ?: false
-                        sender?.sendTelemetry(
-                            batteryLevel = bat,
-                            temperatureC = temp,
-                            lensesMask = mask,
-                            currentZoom = zoom,
-                            currentLens = lens,
-                            isDimmed = isDimScreenActive,
-                            isTorchOn = cameraPipeline?.isTorchActive() ?: false,
-                            micChannels = channels,
-                            micCapsule = capsule,
-                            micBeamforming = beamforming
-                        )
-                    }
-                }
-            }, 500, 2000)
-        }
-    }
-
-    private fun stopTelemetryTimer() {
-        try {
-            telemetryTimer?.cancel()
-            telemetryTimer = null
-        } catch (ignored: Exception) {}
-    }
-
     private fun setupStreamingPipeline() {
         val devName = getFriendlyDeviceName()
 
@@ -590,7 +530,6 @@ class MainActivity : AppCompatActivity() {
                         if (isMicEnabled) {
                             audioPipeline?.start()
                         }
-                        startTelemetryTimer()
                     } else {
                         val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi"
                         statusTextView?.text = "STATUS: BUSCANDO PC ($searchingLabel)..."
@@ -598,7 +537,6 @@ class MainActivity : AppCompatActivity() {
                         // PAUSE HARDWARE ENCODER AND AUDIO TO SAVE BATTERY AND PREVENT OVERHEATING!
                         encoder?.setSuspended(true)
                         audioPipeline?.stop()
-                        stopTelemetryTimer()
                     }
                 }
             },
@@ -608,25 +546,29 @@ class MainActivity : AppCompatActivity() {
         )
         sender?.start()
 
-        // 2. Start Auto-Discovery Manager for Wi-Fi
+        // 2. Start Auto-Discovery Manager for Wi-Fi & USB Auto-Detect
         discoveryManager = AutoDiscoveryManager(this) { device ->
             runOnUiThread {
-                // If stream is ALREADY connected and running, NEVER switch hosts or disrupt the stream!
-                if (sender?.isConnected() == true) {
-                    return@runOnUiThread
-                }
-
-                // If user selected USB mode, stay on USB (127.0.0.1)
-                if (isUsbMode) {
-                    return@runOnUiThread
-                }
-
-                // In Wi-Fi mode: update target host to the discovered PC
-                if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
-                    sender?.setHost(device.ip, device.port)
-                    if (!wifiToastShown) {
-                        wifiToastShown = true
-                        Toast.makeText(this, "PC BouleCam encontrada por WiFi (${device.ip})", Toast.LENGTH_SHORT).show()
+                if (device.isUsb) {
+                    isUsbCableConnected = true
+                    updateConnectionButtonsUI()
+                    if (isUsbMode) {
+                        sender?.setHost("127.0.0.1", 8088)
+                    }
+                } else {
+                    // Wi-Fi PC detected
+                    if (!isUsbCableConnected || !isUsbMode) {
+                        if (isUsbMode && !isUsbCableConnected) {
+                            isUsbMode = false
+                            updateConnectionButtonsUI()
+                        }
+                        if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
+                            sender?.setHost(device.ip, device.port)
+                        }
+                        if (!wifiToastShown) {
+                            wifiToastShown = true
+                            Toast.makeText(this, "PC BouleCam encontrada por WiFi (${device.ip})", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             }
@@ -643,9 +585,9 @@ class MainActivity : AppCompatActivity() {
         encoder?.setSuspended(true) // Suspended until PC connection is established!
 
         // 3.5. Prepare Ultra Low Latency PCM Audio Pipeline (Starts only when connected)
-        audioPipeline = AudioCapturePipeline(this, sampleRate = 48000) { pcmData, size, channels ->
+        audioPipeline = AudioCapturePipeline(sampleRate = 48000) { pcmData, size ->
             if (isMicEnabled && sender?.isConnected() == true) {
-                sender?.sendAudio(pcmData, size, channels)
+                sender?.sendAudio(pcmData, size)
             }
         }
 
@@ -706,9 +648,9 @@ class MainActivity : AppCompatActivity() {
     private fun handleRemoteCommand(cmd: CameraCommand) {
         runOnUiThread {
             when (cmd.action) {
-                1 -> { // BOULECAM_ACTION_SET_LENS (0 = Back Main, 1 = Front, 2 = UltraWide, 3 = Tele/Macro)
+                1 -> { // BOULECAM_ACTION_SET_LENS (0 = Back, 1 = Front)
                     cameraExecutor.execute {
-                        cameraPipeline?.setLens(cmd.intParam1)
+                        cameraPipeline?.setLensFacing(cmd.intParam1)
                         runOnUiThread { updatePreviewTransform() }
                     }
                 }
@@ -748,25 +690,12 @@ class MainActivity : AppCompatActivity() {
                 10 -> { // BOULECAM_ACTION_SET_DIM_SCREEN (0 = Normal, 1 = Dim)
                     setDimScreen(cmd.intParam1 != 0, notifyPeer = false)
                 }
-                11 -> { // BOULECAM_ACTION_SET_ZOOM (floatParam1 = zoom ratio)
-                    cameraPipeline?.setZoom(cmd.floatParam1)
-                }
-                12 -> { // BOULECAM_ACTION_SET_MIC_CAPSULE (0 = Auto, 1 = Bottom, 2 = Back, 3 = Front)
-                    audioPipeline?.setCapsule(cmd.intParam1)
-                }
-                13 -> { // BOULECAM_ACTION_SET_MIC_STEREO (0 = Mono, 1 = Stereo)
-                    audioPipeline?.setStereo(cmd.intParam1 != 0)
-                }
-                14 -> { // BOULECAM_ACTION_SET_MIC_BEAMFORMING (0 = Off, 1 = On)
-                    audioPipeline?.setBeamforming(cmd.intParam1 != 0)
-                }
             }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopTelemetryTimer()
         BouleCamStreamService.stop(this)
 
         try {

@@ -104,14 +104,14 @@ class StreamSender(
         }
     }
 
-    fun sendAudio(pcmData: ByteArray, size: Int, channels: Int = 1) {
+    fun sendAudio(pcmData: ByteArray, size: Int) {
         if (!isConnected.get()) return
 
         // 12-byte BouleCamAudioHeader (BOULECAM_PKT_AUDIO_DATA = 0x40)
         val headerBuffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
         headerBuffer.putInt(0x4243414D)        // Magic "BCAM"
         headerBuffer.put(0x40.toByte())         // BOULECAM_PKT_AUDIO_DATA
-        headerBuffer.put(channels.toByte())     // 1 = Mono, 2 = Stereo
+        headerBuffer.put(1.toByte())            // 1 = Mono
         headerBuffer.putShort(48000.toShort())  // 48000 Hz
         headerBuffer.putInt(size)               // Payload size
 
@@ -178,7 +178,7 @@ class StreamSender(
                     Log.i(TAG, "Disconnected from $targetHost:$targetPort (${e.message})")
                     onConnectionStateChanged(false)
                 }
-                try { Thread.sleep(350) } catch (ignored: Exception) {}
+                try { Thread.sleep(1000) } catch (ignored: Exception) {}
             }
         }
     }
@@ -270,55 +270,29 @@ class StreamSender(
         }
     }
 
-    fun sendTelemetry(
-        batteryLevel: Float,
-        temperatureC: Float,
-        lensesMask: Int,
-        currentZoom: Float,
-        currentLens: Int,
-        isDimmed: Boolean,
-        isTorchOn: Boolean = false,
-        micChannels: Int = 1,
-        micCapsule: Int = 0,
-        micBeamforming: Boolean = false
-    ) {
+    fun sendDimState(isDimmed: Boolean) {
         if (!isConnected.get()) return
         try {
-            val buffer = ByteBuffer.allocate(46).order(ByteOrder.LITTLE_ENDIAN)
+            val buffer = ByteBuffer.allocate(30).order(ByteOrder.LITTLE_ENDIAN)
             buffer.putInt(0x4243414D) // BOULECAM_MAGIC
             buffer.put(0x31.toByte())  // BOULECAM_PKT_CAMERA_STATE
-            buffer.put(currentLens.toByte()) // current_lens (0=Back, 1=Front, 2=UltraWide, 3=Tele)
-            buffer.put((if (isTorchOn) 1 else 0).toByte()) // torch_on
+            buffer.put(0.toByte())     // current_lens
+            buffer.put(0.toByte())     // torch_on
             buffer.putInt(0)           // current_iso
             buffer.putLong(0L)         // current_exposure_ns
             buffer.putInt(0)           // current_ev
             buffer.put(0.toByte())     // current_wb
             buffer.putFloat(0.0f)      // current_focus
             buffer.put(1.toByte())     // mic_enabled
-            buffer.putFloat(batteryLevel) // battery_level (0.0 - 100.0)
+            buffer.putFloat(1.0f)      // battery_level
             buffer.put((if (isDimmed) 1 else 0).toByte()) // dim_screen_active
-            buffer.putFloat(temperatureC) // device_temperature in Celsius
-            buffer.put(lensesMask.toByte()) // available_lenses_mask
-            buffer.putFloat(currentZoom) // current_zoom
-            buffer.put(micChannels.toByte()) // mic_channels (1 = Mono, 2 = Stereo)
-            buffer.put(micCapsule.toByte())  // mic_capsule (0 = Auto, 1 = Bottom, 2 = Back, 3 = Front)
-            buffer.put((if (micBeamforming) 1 else 0).toByte()) // mic_beamforming
+
             val packet = buffer.array()
             sendQueue.offer(packet)
+            Log.i(TAG, "Sent Dim Screen state to PC: isDimmed=$isDimmed")
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending telemetry: ${e.message}")
+            Log.e(TAG, "Error sending dim state: ${e.message}")
         }
-    }
-
-    fun sendDimState(isDimmed: Boolean) {
-        sendTelemetry(
-            batteryLevel = -1.0f,
-            temperatureC = 0.0f,
-            lensesMask = 3,
-            currentZoom = 1.0f,
-            currentLens = 0,
-            isDimmed = isDimmed
-        )
     }
 
     private fun closeSocket() {

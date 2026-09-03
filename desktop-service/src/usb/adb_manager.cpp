@@ -3,7 +3,6 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
-#include <set>
 
 namespace boulecam {
 
@@ -152,33 +151,13 @@ void AdbManager::Stop() {
 void AdbManager::MonitorThreadWorker() {
     std::string adbPath = FindAdbExecutable();
     std::cout << "[AdbManager] Starting USB ADB monitoring daemon for Android (ADB: " << adbPath << ")..." << std::endl;
-    std::set<std::string> knownSerials;
-
     while (m_isRunning.load()) {
-        std::vector<std::string> currentSerials = GetAttachedDeviceSerials();
-        std::set<std::string> curSet(currentSerials.begin(), currentSerials.end());
-
-        // Check if any new device serial appeared that hasn't had reverse forwarded
-        bool needsReverse = false;
-        for (const auto& s : curSet) {
-            if (knownSerials.find(s) == knownSerials.end()) {
-                needsReverse = true;
-                break;
-            }
-        }
-
-        if (needsReverse || (knownSerials.empty() && !curSet.empty())) {
-            bool connected = ExecuteAdbReverse(m_localPort, m_phonePort);
-            m_isDeviceConnected.store(connected);
-            knownSerials = curSet;
-            std::cout << "[AdbManager] Forwarded ADB reverse ports for USB device(s)." << std::endl;
-        } else if (curSet.empty()) {
-            knownSerials.clear();
-            m_isDeviceConnected.store(false);
-        }
-
-        // Sleep 3 seconds before polling attached device list again
-        for (int i = 0; i < 30 && m_isRunning.load(); ++i) {
+        // Periodically verify reverse port mapping and device connection
+        bool connected = ExecuteAdbReverse(m_localPort, m_phonePort);
+        m_isDeviceConnected.store(connected);
+        
+        // Sleep in small intervals to allow immediate shutdown (approx 1.5 seconds)
+        for (int i = 0; i < 15 && m_isRunning.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }

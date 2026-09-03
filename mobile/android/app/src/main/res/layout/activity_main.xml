@@ -58,7 +58,7 @@
         <!-- Sleek Circular Pill Toggle (USB / Wi-Fi) -->
         <FrameLayout
             android:id="@+id/layout_mode_toggle"
-            android:layout_width="86dp"
+            android:layout_width="92dp"
             android:layout_height="34dp"
             android:background="@drawable/bg_toggle_pill"
             android:padding="3dp"
