@@ -300,22 +300,31 @@ bool TcpReceiver::LockCameraSlot(int camId, bool lock, const std::string& unique
     std::string targetUid = uniqueId;
     std::string targetName = devName;
 
-    if (targetUid.empty()) {
-        auto itClient = m_clients.find(camId);
-        if (itClient != m_clients.end()) {
-            targetUid = itClient->second.uniqueId;
-            if (targetName.empty()) targetName = itClient->second.deviceName;
-        }
+    // 1. Try from active client
+    auto itClient = m_clients.find(camId);
+    if (itClient != m_clients.end()) {
+        if (targetUid.empty()) targetUid = itClient->second.uniqueId;
+        if (targetName.empty()) targetName = itClient->second.deviceName;
+    }
+
+    // 2. Try from previously locked slot if still empty
+    auto itLock = m_lockedSlots.find(camId);
+    if (itLock != m_lockedSlots.end()) {
+        if (targetUid.empty()) targetUid = itLock->second.uniqueId;
+        if (targetName.empty()) targetName = itLock->second.deviceName;
+    }
+
+    if (targetName.empty()) {
+        targetName = "Cam " + std::to_string(camId);
     }
 
     if (targetUid.empty()) {
-        std::cerr << "[TcpReceiver] Cannot lock Cam " << camId << ": no unique ID available." << std::endl;
-        return false;
+        targetUid = "dev_" + targetName;
     }
 
     // Remove any previous lock for this unique ID on another slot
     for (auto it = m_lockedSlots.begin(); it != m_lockedSlots.end(); ) {
-        if (it->second.uniqueId == targetUid) {
+        if (it->second.uniqueId == targetUid && it->first != camId) {
             it = m_lockedSlots.erase(it);
         } else {
             ++it;
@@ -325,7 +334,7 @@ bool TcpReceiver::LockCameraSlot(int camId, bool lock, const std::string& unique
     LockedCameraSlot slot;
     slot.camId = camId;
     slot.uniqueId = targetUid;
-    slot.deviceName = targetName.empty() ? ("Móvil " + std::to_string(camId)) : targetName;
+    slot.deviceName = targetName;
     slot.isLocked = true;
     m_lockedSlots[camId] = slot;
     SaveLockedSlots();
@@ -333,6 +342,30 @@ bool TcpReceiver::LockCameraSlot(int camId, bool lock, const std::string& unique
     std::cout << "[TcpReceiver] Cam " << camId << " LOCKED to device '" << slot.deviceName 
               << "' (ID: " << targetUid << ")" << std::endl;
     return true;
+}
+
+bool TcpReceiver::RenameCameraSlot(int camId, const std::string& newName) {
+    std::lock_guard<std::mutex> lockGuard(m_clientsMutex);
+    if (camId <= 0 || newName.empty()) return false;
+
+    bool updated = false;
+    auto itClient = m_clients.find(camId);
+    if (itClient != m_clients.end()) {
+        itClient->second.deviceName = newName;
+        updated = true;
+    }
+
+    auto itLock = m_lockedSlots.find(camId);
+    if (itLock != m_lockedSlots.end() && itLock->second.isLocked) {
+        itLock->second.deviceName = newName;
+        SaveLockedSlots();
+        updated = true;
+    }
+
+    if (updated) {
+        std::cout << "[TcpReceiver] Renamed Cam " << camId << " -> '" << newName << "'" << std::endl;
+    }
+    return updated;
 }
 
 bool TcpReceiver::IsCameraSlotLocked(int camId) {
@@ -372,6 +405,19 @@ std::string TcpReceiver::GetClientUniqueId(int deviceId) {
         return itLock->second.uniqueId;
     }
     return "";
+}
+
+std::string TcpReceiver::GetClientDeviceName(int deviceId) {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    auto itLock = m_lockedSlots.find(deviceId);
+    if (itLock != m_lockedSlots.end() && itLock->second.isLocked && !itLock->second.deviceName.empty()) {
+        return itLock->second.deviceName;
+    }
+    auto itClient = m_clients.find(deviceId);
+    if (itClient != m_clients.end() && !itClient->second.deviceName.empty()) {
+        return itClient->second.deviceName;
+    }
+    return "Cam " + std::to_string(deviceId);
 }
 
 std::vector<ConnectedClient> TcpReceiver::GetConnectedClients() {
@@ -486,15 +532,18 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 break;
             }
 
+            // Clean strings
             std::string devName(req.device_name, strnlen(req.device_name, sizeof(req.device_name)));
             std::string devUid(req.device_id, strnlen(req.device_id, sizeof(req.device_id)));
 
-            // Extract fallback unique ID if not provided by client
+            // Extract fallback unique ID if not provided by client (invariant across network transports)
             if (devUid.empty()) {
-                if (clientIp == "127.0.0.1") {
-                    devUid = "usb_" + (!devName.empty() ? devName : "android");
+                if (!devName.empty()) {
+                    devUid = "dev_" + devName;
+                } else if (clientIp == "127.0.0.1") {
+                    devUid = "dev_usb_client";
                 } else {
-                    devUid = "wifi_" + clientIp;
+                    devUid = "dev_wifi_client";
                 }
             }
 
@@ -516,30 +565,48 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 std::lock_guard<std::mutex> lock(m_clientsMutex);
 
                 // PRIORITY 1: Check if this device has a LOCKED camera slot
-                for (const auto& lockPair : m_lockedSlots) {
-                    if (lockPair.second.isLocked && lockPair.second.uniqueId == devUid) {
+                for (auto& lockPair : m_lockedSlots) {
+                    if (!lockPair.second.isLocked) continue;
+
+                    bool uidMatch = (!devUid.empty() && lockPair.second.uniqueId == devUid);
+                    bool substringMatch = (!devUid.empty() && !lockPair.second.uniqueId.empty() &&
+                        (lockPair.second.uniqueId.find(devUid) != std::string::npos || devUid.find(lockPair.second.uniqueId) != std::string::npos));
+                    bool nameMatch = (!devName.empty() && (lockPair.second.deviceName == devName || lockPair.second.uniqueId == ("dev_" + devName)));
+
+                    if (uidMatch || substringMatch || nameMatch) {
                         assignedId = lockPair.first;
+                        // Auto-upgrade locked slot uniqueId if it was a fallback or partial before
+                        if (!devUid.empty() && lockPair.second.uniqueId != devUid) {
+                            lockPair.second.uniqueId = devUid;
+                            SaveLockedSlots();
+                        }
                         std::cout << "[TcpReceiver] Device '" << devName << "' (ID: " << devUid 
-                                  << ") is LOCKED to Cam " << assignedId << std::endl;
+                                  << ") MATCHED LOCKED Cam " << assignedId << " ('" << lockPair.second.deviceName << "')" << std::endl;
                         break;
                     }
                 }
 
                 if (assignedId != -1) {
+                    std::string finalDevName = devName;
+                    auto itL = m_lockedSlots.find(assignedId);
+                    if (itL != m_lockedSlots.end() && itL->second.isLocked && !itL->second.deviceName.empty()) {
+                        finalDevName = itL->second.deviceName;
+                    }
+
                     auto itOcc = m_clients.find(assignedId);
                     if (itOcc != m_clients.end()) {
-                        if (itOcc->second.uniqueId == devUid) {
+                        if (itOcc->second.uniqueId == devUid || itOcc->second.deviceName == devName) {
                             // Reconnect of same device
                             if (itOcc->second.socket != clientSocket && itOcc->second.socket != INVALID_SOCKET) {
                                 closesocket(itOcc->second.socket);
                             }
                             itOcc->second.socket = clientSocket;
                             itOcc->second.port = clientPort;
-                            itOcc->second.deviceName = devName;
+                            itOcc->second.deviceName = finalDevName;
                             itOcc->second.ip = clientIp;
                             itOcc->second.deviceIdRef = deviceIdRef;
                             deviceIdRef->store(assignedId);
-                            std::cout << "[TcpReceiver] Reconnected locked [Device " << assignedId << "] (" << devName 
+                            std::cout << "[TcpReceiver] Reconnected locked [Device " << assignedId << "] (" << finalDevName 
                                       << " from " << clientIp << ":" << clientPort << ")" << std::endl;
                         } else {
                             // Another transient (unlocked) device was in this slot: relocate it
@@ -560,7 +627,7 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                             // Assign slot to the locked owner
                             ConnectedClient client;
                             client.id = assignedId;
-                            client.deviceName = devName;
+                            client.deviceName = finalDevName;
                             client.uniqueId = devUid;
                             client.socket = clientSocket;
                             client.ip = clientIp;
@@ -573,7 +640,7 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                         // Slot is vacant: assign it
                         ConnectedClient client;
                         client.id = assignedId;
-                        client.deviceName = devName;
+                        client.deviceName = finalDevName;
                         client.uniqueId = devUid;
                         client.socket = clientSocket;
                         client.ip = clientIp;
@@ -587,23 +654,21 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                     // PRIORITY 2: Not locked. Check if reconnecting to an existing slot
                     for (auto& pair : m_clients) {
                         bool sameUid = (!devUid.empty() && pair.second.uniqueId == devUid);
-                        bool isUsb = (clientIp == "127.0.0.1" && pair.second.ip == "127.0.0.1");
                         bool sameDev = (!devName.empty() && pair.second.deviceName == devName);
-                        bool sameWifiIp = (!isUsb && pair.second.ip == clientIp);
 
-                        if (sameUid || (sameDev && (isUsb || sameWifiIp))) {
+                        if (sameUid || sameDev) {
                             assignedId = pair.first;
                             if (pair.second.socket != clientSocket && pair.second.socket != INVALID_SOCKET) {
                                 closesocket(pair.second.socket);
                             }
                             pair.second.socket = clientSocket;
                             pair.second.port = clientPort;
-                            pair.second.deviceName = devName;
+                            pair.second.deviceName = (!pair.second.deviceName.empty()) ? pair.second.deviceName : devName;
                             pair.second.uniqueId = devUid;
                             pair.second.ip = clientIp;
                             pair.second.deviceIdRef = deviceIdRef;
                             deviceIdRef->store(assignedId);
-                            std::cout << "[TcpReceiver] Reconnected [Device " << assignedId << "] (" << devName 
+                            std::cout << "[TcpReceiver] Reconnected [Device " << assignedId << "] (" << pair.second.deviceName 
                                       << " from " << clientIp << ":" << clientPort << ")" << std::endl;
                             break;
                         }
@@ -617,7 +682,7 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                             bool lockedToOther = false;
                             auto itLock = m_lockedSlots.find(assignedId);
                             if (itLock != m_lockedSlots.end() && itLock->second.isLocked) {
-                                if (itLock->second.uniqueId != devUid) {
+                                if (itLock->second.uniqueId != devUid && itLock->second.deviceName != devName) {
                                     lockedToOther = true;
                                 }
                             }

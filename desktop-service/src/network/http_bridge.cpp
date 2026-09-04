@@ -242,19 +242,32 @@ void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name,
     std::lock_guard<std::mutex> lock(m_statusMutex);
     DeviceInfo& dev = m_devices[deviceId];
     dev.id = deviceId;
-    dev.name = name;
+
+    // If device slot is already locked with a custom name, preserve that name!
+    bool isLocked = m_receiver.IsCameraSlotLocked(deviceId);
+    dev.isLocked = isLocked;
+    if (isLocked) {
+        auto lockInfo = m_receiver.GetSlotLock(deviceId);
+        if (!lockInfo.deviceName.empty()) {
+            dev.name = lockInfo.deviceName;
+        } else {
+            dev.name = name;
+        }
+    } else {
+        dev.name = name;
+    }
+
     dev.ip = ip;
     dev.isUsb = isUsb;
     dev.uniqueId = uniqueId;
     dev.connected = true;
-    dev.isLocked = m_receiver.IsCameraSlotLocked(deviceId);
     if (width > 0) dev.width = width;
     if (height > 0) dev.height = height;
 
     if (deviceId == m_activeDeviceId.load() || !m_status.connected) {
         m_status.connected = true;
         m_status.activeDeviceId = deviceId;
-        m_status.deviceName = name;
+        m_status.deviceName = dev.name;
         m_status.deviceIp = ip;
         m_status.isUsb = isUsb;
         if (width > 0) m_status.width = width;
@@ -262,12 +275,21 @@ void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name,
     }
 }
 
-bool HttpControlBridge::LockDevice(int camId, bool lock) {
-    bool ok = m_receiver.LockCameraSlot(camId, lock);
-    std::lock_guard<std::mutex> lockGuard(m_statusMutex);
-    if (m_devices.find(camId) != m_devices.end()) {
-        m_devices[camId].isLocked = lock;
+bool HttpControlBridge::LockDevice(int camId, bool lock, const std::string& uniqueId, const std::string& devName) {
+    std::string targetUid = uniqueId;
+    std::string targetName = devName;
+
+    {
+        std::lock_guard<std::mutex> lockGuard(m_statusMutex);
+        if (m_devices.find(camId) != m_devices.end()) {
+            if (targetUid.empty()) targetUid = m_devices[camId].uniqueId;
+            if (targetName.empty()) targetName = m_devices[camId].name;
+            m_devices[camId].isLocked = lock;
+            if (!targetName.empty()) m_devices[camId].name = targetName;
+        }
     }
+
+    bool ok = m_receiver.LockCameraSlot(camId, lock, targetUid, targetName);
     return ok;
 }
 
@@ -395,6 +417,7 @@ bool HttpControlBridge::ReassignDevice(int fromId, int toId) {
 }
 
 bool HttpControlBridge::RenameDevice(int camId, const std::string& newName) {
+    m_receiver.RenameCameraSlot(camId, newName);
     std::lock_guard<std::mutex> lock(m_statusMutex);
     if (m_devices.find(camId) != m_devices.end()) {
         m_devices[camId].name = newName;
@@ -403,7 +426,7 @@ bool HttpControlBridge::RenameDevice(int camId, const std::string& newName) {
         }
         return true;
     }
-    return false;
+    return true;
 }
 
 void HttpControlBridge::TriggerRescan() {
@@ -947,7 +970,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         return;
     }
 
-    // 3.35 Lock / Unlock Camera API (/api/lock_cam?cam=X&lock=1)
+    // 3.35 Lock / Unlock Camera API (/api/lock_cam?cam=X&lock=1&uid=...&name=...)
     if (firstLine.find("/api/lock_cam") != std::string::npos) {
         int camId = (requestedCamId > 0) ? requestedCamId : 1;
         int lockVal = 1;
@@ -958,7 +981,21 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             try { lockVal = std::stoi(valStr); } catch (...) {}
         }
 
-        bool ok = LockDevice(camId, lockVal != 0);
+        std::string uidStr = "";
+        size_t pUid = requestStr.find("uid=");
+        if (pUid != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", pUid + 4);
+            uidStr = UrlDecode(requestStr.substr(pUid + 4, endP - (pUid + 4)));
+        }
+
+        std::string nameStr = "";
+        size_t pName = requestStr.find("name=");
+        if (pName != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", pName + 5);
+            nameStr = UrlDecode(requestStr.substr(pName + 5, endP - (pName + 5)));
+        }
+
+        bool ok = LockDevice(camId, lockVal != 0, uidStr, nameStr);
 
         std::string body = ok ? "{\"status\":\"ok\",\"cam\":" + std::to_string(camId) + ",\"locked\":" + std::string(lockVal != 0 ? "true" : "false") + "}" : "{\"status\":\"error\"}";
         std::ostringstream oss;

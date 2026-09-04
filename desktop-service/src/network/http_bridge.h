@@ -68,7 +68,7 @@ public:
     bool SwapDevices(int camA, int camB);
     bool ReassignDevice(int fromId, int toId);
     bool RenameDevice(int camId, const std::string& newName);
-    bool LockDevice(int camId, bool lock);
+    bool LockDevice(int camId, bool lock, const std::string& uniqueId = "", const std::string& devName = "");
 
     using RescanCallback = std::function<void()>;
     void SetRescanCallback(RescanCallback cb) { m_rescanCallback = cb; }

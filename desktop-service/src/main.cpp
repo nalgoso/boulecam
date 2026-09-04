@@ -151,8 +151,9 @@ int main(int argc, char* argv[]) {
         [&shmProducer, &httpBridge, &tcpReceiver](int deviceId, const BouleCamHandshakeReq& handshake) {
             std::string clientIp = tcpReceiver.GetClientIp(deviceId);
             std::string uniqueId = tcpReceiver.GetClientUniqueId(deviceId);
+            std::string deviceName = tcpReceiver.GetClientDeviceName(deviceId);
             bool isUsb = (clientIp == "127.0.0.1");
-            std::cout << "[Stream] Connected [Device " << deviceId << "]: " << handshake.device_name 
+            std::cout << "[Stream] Connected [Device " << deviceId << "]: " << deviceName 
                       << " (ID: " << uniqueId << ")"
                       << " (" << (isUsb ? "USB Cable" : ("Wi-Fi " + clientIp)) << ")"
                       << " Resolution: " << handshake.width << "x" << handshake.height 
@@ -162,7 +163,7 @@ int main(int argc, char* argv[]) {
                 shmProducer.UpdateFormat(handshake.width, handshake.height, handshake.target_fps);
                 shmProducer.SetStreamingActive(true);
             }
-            httpBridge.SetDeviceMetadata(deviceId, handshake.device_name, handshake.width, handshake.height, clientIp, isUsb, uniqueId);
+            httpBridge.SetDeviceMetadata(deviceId, deviceName, handshake.width, handshake.height, clientIp, isUsb, uniqueId);
         },
         [&httpBridge](int deviceId, const BouleCamCameraState& state) {
             httpBridge.SetDeviceDimState(deviceId, state.dim_screen_active != 0);

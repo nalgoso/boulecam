@@ -338,7 +338,7 @@ function setupModals() {
       if (newName) {
         customCamNames[newNum] = newName;
         saveCustomNames(customCamNames);
-        fetch(`${API_BASE}/api/rename_cam?cam=${targetId}&name=${encodeURIComponent(newName)}`, { method: 'POST' }).catch(() => {});
+        await fetch(`${API_BASE}/api/rename_cam?cam=${targetId}&name=${encodeURIComponent(newName)}`, { method: 'POST' }).catch(() => {});
       } else if (customCamNames[targetId]) {
         delete customCamNames[targetId];
         saveCustomNames(customCamNames);
@@ -364,8 +364,11 @@ function setupModals() {
       // Update lock state if checkbox exists
       const editCamLock = document.getElementById('edit-cam-lock');
       const isLockedCheck = editCamLock ? editCamLock.checked : false;
+      const dev = (lastDevicesList || []).find(d => d.id === newNum || d.id === targetId);
+      const finalName = newName || customCamNames[newNum] || dev?.name || `Cam ${newNum}`;
+      const finalUid = dev?.uniqueId || '';
       try {
-        await fetch(`${API_BASE}/api/lock_cam?cam=${newNum}&lock=${isLockedCheck ? 1 : 0}`, { method: 'POST' });
+        await fetch(`${API_BASE}/api/lock_cam?cam=${newNum}&lock=${isLockedCheck ? 1 : 0}&uid=${encodeURIComponent(finalUid)}&name=${encodeURIComponent(finalName)}`, { method: 'POST' });
       } catch (e) {}
 
       closeEditModal();
@@ -537,10 +540,16 @@ function renderDeviceTabs(devices, activeId) {
       const dev = (lastDevicesList || []).find(d => d.id === id);
       const newLockState = !dev?.isLocked;
       const devName = customCamNames[id] || dev?.name || `Cam ${id}`;
+      const devUid = dev?.uniqueId || '';
 
       try {
-        await fetch(`${API_BASE}/api/lock_cam?cam=${id}&lock=${newLockState ? 1 : 0}`, { method: 'POST' });
-        showToast(newLockState ? `🔒 Cam ${id} bloqueada permanentemente a ${devName}` : `🔓 Cam ${id} desbloqueada (dinámica)`);
+        const resp = await fetch(`${API_BASE}/api/lock_cam?cam=${id}&lock=${newLockState ? 1 : 0}&uid=${encodeURIComponent(devUid)}&name=${encodeURIComponent(devName)}`, { method: 'POST' });
+        const resJson = await resp.json().catch(() => ({ status: 'error' }));
+        if (resJson.status === 'ok') {
+          showToast(newLockState ? `🔒 Cam ${id} bloqueada permanentemente a ${devName}` : `🔓 Cam ${id} desbloqueada (dinámica)`);
+        } else {
+          showToast('Error al actualizar bloqueo');
+        }
         pollStatus();
       } catch (err) {
         showToast('Error al actualizar bloqueo');

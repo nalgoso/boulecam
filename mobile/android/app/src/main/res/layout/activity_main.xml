@@ -13,13 +13,21 @@
         android:layout_height="match_parent"
         android:layout_centerInParent="true" />
 
+    <!-- Alignment & Composition Grid Overlay (Rule of thirds + center crosshair, phone screen only) -->
+    <com.boulecam.ui.GridOverlayView
+        android:id="@+id/grid_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_centerInParent="true"
+        android:visibility="gone" />
+
     <!-- Top Status Bar (Glassmorphic HUD) -->
     <LinearLayout
         android:id="@+id/top_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentTop="true"
-        android:background="#DD000000"
+        android:background="#CC000000"
         android:orientation="horizontal"
         android:paddingHorizontal="12dp"
         android:paddingVertical="8dp"
@@ -96,8 +104,8 @@
         </FrameLayout>
     </LinearLayout>
 
-    <!-- Unified Floating Camera Quick Control Dock (Identical to Desktop Studio) -->
-    <LinearLayout
+    <!-- Unified Floating Camera Quick Control Dock (Identical to Desktop Studio + Grid Alignment) -->
+    <HorizontalScrollView
         android:id="@+id/video_quick_dock"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -105,88 +113,106 @@
         android:layout_centerHorizontal="true"
         android:layout_marginBottom="12dp"
         android:background="@drawable/bg_dock_glass"
-        android:orientation="horizontal"
-        android:paddingHorizontal="12dp"
-        android:paddingVertical="6dp"
-        android:gravity="center_vertical"
+        android:scrollbars="none"
+        android:overScrollMode="never"
         android:elevation="10dp">
 
-        <!-- Flip Camera (Front / Back Lens) -->
-        <ImageButton
-            android:id="@+id/btn_dock_flip"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_flip"
-            android:contentDescription="Girar Cámara (Frontal / Trasera)"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="6dp" />
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="6dp"
+            android:gravity="center_vertical">
 
-        <!-- Torch / Flash -->
-        <ImageButton
-            android:id="@+id/btn_dock_torch"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_torch"
-            android:contentDescription="Linterna / Flash"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="6dp" />
+            <!-- Flip Camera (Front / Back Lens) -->
+            <ImageButton
+                android:id="@+id/btn_dock_flip"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_flip"
+                android:contentDescription="Girar Cámara (Frontal / Trasera)"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
 
-        <!-- Microphone -->
-        <ImageButton
-            android:id="@+id/btn_dock_mic"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_mic"
-            android:contentDescription="Micrófono"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="6dp" />
+            <!-- Torch / Flash -->
+            <ImageButton
+                android:id="@+id/btn_dock_torch"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_torch"
+                android:contentDescription="Linterna / Flash"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
 
-        <!-- Mirror (Espejar Video) -->
-        <ImageButton
-            android:id="@+id/btn_dock_mirror"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_mirror"
-            android:contentDescription="Espejar Pantalla"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="6dp" />
+            <!-- Microphone -->
+            <ImageButton
+                android:id="@+id/btn_dock_mic"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_mic"
+                android:contentDescription="Micrófono"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
 
-        <!-- Rotate 180 (Invert orientation) -->
-        <ImageButton
-            android:id="@+id/btn_dock_rotate_180"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_rotate"
-            android:contentDescription="Rotar 180°"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="6dp" />
+            <!-- Mirror (Espejar Video) -->
+            <ImageButton
+                android:id="@+id/btn_dock_mirror"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_mirror"
+                android:contentDescription="Espejar Pantalla"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
 
-        <!-- Dim Screen (Atenuar pantalla) -->
-        <ImageButton
-            android:id="@+id/btn_dock_dim"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_dim"
-            android:contentDescription="Atenuar pantalla"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="6dp" />
+            <!-- Rotate 180 (Invert orientation) -->
+            <ImageButton
+                android:id="@+id/btn_dock_rotate_180"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_rotate"
+                android:contentDescription="Rotar 180°"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
 
-        <!-- Pro Settings Toggle -->
-        <ImageButton
-            android:id="@+id/btn_dock_pro"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:background="@drawable/bg_dock_btn"
-            android:src="@drawable/ic_cam_tune"
-            android:contentDescription="Ajustes de Cámara"
-            app:tint="#4ADE80" />
-    </LinearLayout>
+            <!-- Grid / Alignment Guide (Cuadrícula de alineación - solo en pantalla del teléfono) -->
+            <ImageButton
+                android:id="@+id/btn_dock_grid"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_grid"
+                android:contentDescription="Cuadrícula y alineación"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
+
+            <!-- Dim Screen (Atenuar pantalla) -->
+            <ImageButton
+                android:id="@+id/btn_dock_dim"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_dim"
+                android:contentDescription="Atenuar pantalla"
+                app:tint="#FFFFFF"
+                android:layout_marginEnd="5dp" />
+
+            <!-- Pro Settings Toggle -->
+            <ImageButton
+                android:id="@+id/btn_dock_pro"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_dock_btn"
+                android:src="@drawable/ic_cam_tune"
+                android:contentDescription="Ajustes de Cámara"
+                app:tint="#4ADE80" />
+        </LinearLayout>
+    </HorizontalScrollView>
 
     <!-- Bottom Status & Pro Controls Container -->
     <LinearLayout

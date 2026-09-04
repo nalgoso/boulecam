@@ -244,7 +244,7 @@ class StreamSender(
 
             val idBytes = deviceId.toByteArray(Charsets.UTF_8)
             val idArr = ByteArray(16)
-            System.arraycopy(idBytes, 0, idArr, 0, minOf(idBytes.size, 15))
+            System.arraycopy(idBytes, 0, idArr, 0, minOf(idBytes.size, 16))
             hsBuffer.put(idArr) // (16)
 
             out.write(hsBuffer.array())

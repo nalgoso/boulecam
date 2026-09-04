@@ -30,6 +30,7 @@ import com.boulecam.network.CameraCommand
 import com.boulecam.network.StreamSender
 import com.boulecam.service.BouleCamStreamService
 import com.boulecam.ui.AutoFitTextureView
+import com.boulecam.ui.GridOverlayView
 
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -60,8 +61,11 @@ class MainActivity : AppCompatActivity() {
     private var btnDockMic: ImageButton? = null
     private var btnDockMirror: ImageButton? = null
     private var btnDockRotate180: ImageButton? = null
+    private var btnDockGrid: ImageButton? = null
     private var btnDockDim: ImageButton? = null
     private var btnDockPro: ImageButton? = null
+    private var gridOverlay: GridOverlayView? = null
+    private var isGridEnabled = false
     private var manualRotation180 = false
     private var manualMirror = false
     private var isDockTrayVisible = true
@@ -130,8 +134,14 @@ class MainActivity : AppCompatActivity() {
         btnDockMic = findViewById(R.id.btn_dock_mic)
         btnDockMirror = findViewById(R.id.btn_dock_mirror)
         btnDockRotate180 = findViewById(R.id.btn_dock_rotate_180)
+        btnDockGrid = findViewById(R.id.btn_dock_grid)
         btnDockDim = findViewById(R.id.btn_dock_dim)
         btnDockPro = findViewById(R.id.btn_dock_pro)
+        gridOverlay = findViewById(R.id.grid_overlay)
+
+        val prefs = getSharedPreferences("boulecam_prefs", MODE_PRIVATE)
+        isGridEnabled = prefs.getBoolean("grid_enabled", false)
+        updateGridUI()
 
         proControlsLayout = findViewById(R.id.pro_controls_layout)
         seekIso = findViewById(R.id.seek_iso)
@@ -144,6 +154,13 @@ class MainActivity : AppCompatActivity() {
         lblFocus = findViewById(R.id.lbl_focus)
 
         setupEventListeners()
+    }
+
+    private fun updateGridUI() {
+        gridOverlay?.visibility = if (isGridEnabled) View.VISIBLE else View.GONE
+        btnDockGrid?.imageTintList = ColorStateList.valueOf(
+            if (isGridEnabled) COLOR_LIGHT_GREEN else Color.WHITE
+        )
     }
 
     private fun setupUsbReceiver() {
@@ -264,6 +281,7 @@ class MainActivity : AppCompatActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updatePreviewTransform()
+        textureView?.post { updatePreviewTransform() }
     }
 
     private fun updatePreviewTransform() {
@@ -279,13 +297,15 @@ class MainActivity : AppCompatActivity() {
         val isScreenLandscape = (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
         if (isScreenLandscape) {
             tv.setAspectRatio(16, 9)
+            gridOverlay?.setAspectRatio(16, 9)
         } else {
             tv.setAspectRatio(9, 16)
+            gridOverlay?.setAspectRatio(9, 16)
         }
 
         val isFront = cameraPipeline?.getCurrentLensFacing() == 1
         if (tv.width > 0 && tv.height > 0) {
-            tv.configureTransform(tv.width, tv.height, displayRotation, isFront, manualMirror)
+            tv.configureTransform(tv.width, tv.height, displayRotation, isFront, manualMirror, manualRotation180)
         }
 
         // Map configuration & display rotation to exact stream orientation metadata:
@@ -410,6 +430,20 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, if (manualRotation180) "Rotación 180° invertida" else "Rotación normal", Toast.LENGTH_SHORT).show()
         }
 
+        btnDockGrid?.setOnClickListener {
+            isGridEnabled = !isGridEnabled
+            getSharedPreferences("boulecam_prefs", MODE_PRIVATE)
+                .edit()
+                .putBoolean("grid_enabled", isGridEnabled)
+                .apply()
+            updateGridUI()
+            Toast.makeText(
+                this,
+                if (isGridEnabled) "Cuadrícula de alineación activada" else "Cuadrícula desactivada",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
         btnDockDim?.setOnClickListener {
             setDimScreen(!isDimScreenActive, notifyPeer = true)
         }
@@ -511,19 +545,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getUniqueDeviceId(): String {
+        val prefs = getSharedPreferences("boulecam_prefs", android.content.Context.MODE_PRIVATE)
+        val savedId = prefs.getString("unique_device_id", null)
+        if (!savedId.isNullOrBlank()) {
+            return savedId
+        }
+
+        var devId: String? = null
         try {
             val androidId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
             if (!androidId.isNullOrBlank()) {
-                return androidId.lowercase().take(16)
+                devId = androidId.lowercase().take(16)
             }
         } catch (e: Exception) {}
-        val prefs = getSharedPreferences("boulecam_prefs", android.content.Context.MODE_PRIVATE)
-        var savedId = prefs.getString("unique_device_id", null)
-        if (savedId.isNullOrBlank()) {
-            savedId = java.util.UUID.randomUUID().toString().replace("-", "").take(16).lowercase()
-            prefs.edit().putString("unique_device_id", savedId).apply()
+
+        if (devId.isNullOrBlank()) {
+            devId = java.util.UUID.randomUUID().toString().replace("-", "").take(16).lowercase()
         }
-        return savedId
+        prefs.edit().putString("unique_device_id", devId).apply()
+        return devId
     }
 
     private fun setupStreamingPipeline() {

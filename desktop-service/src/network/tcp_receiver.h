@@ -99,10 +99,14 @@ public:
     void SetAudioCallback(AudioReceivedCallback audioCb) { m_audioCallback = audioCb; }
     void SetDisconnectedCallback(ClientDisconnectedCallback discCb) { m_disconnectCallback = discCb; }
 
+    // Rename a camera slot (persists to locked slots if locked)
+    bool RenameCameraSlot(int camId, const std::string& newName);
+
     std::vector<ConnectedClient> GetConnectedClients();
     double GetClientRttMs(int deviceId);
     std::string GetClientIp(int deviceId);
     std::string GetClientUniqueId(int deviceId);
+    std::string GetClientDeviceName(int deviceId);
 
 private:
     void ListenThreadWorker();
