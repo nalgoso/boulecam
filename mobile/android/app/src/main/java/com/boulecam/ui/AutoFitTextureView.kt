@@ -55,24 +55,27 @@ class AutoFitTextureView @JvmOverloads constructor(
      * recorded and streamed, with ZERO distortion and ZERO cropping.
      */
     fun configureTransform(
-        viewWidth: Int, 
-        viewHeight: Int, 
+        viewWidth: Int,
+        viewHeight: Int,
         displayRotation: Int,
         isFrontCamera: Boolean = false,
         isMirrored: Boolean = false,
         manualRotation180: Boolean = false
     ) {
-        if (viewWidth <= 0 || viewHeight <= 0) return
-
-        lastViewWidth = viewWidth
-        lastViewHeight = viewHeight
         lastDisplayRotation = displayRotation
         lastIsFrontCamera = isFrontCamera
         lastIsMirrored = isMirrored
         lastManualRotation180 = manualRotation180
 
+        val actualW = if (viewWidth > 0) viewWidth else width
+        val actualH = if (viewHeight > 0) viewHeight else height
+        if (actualW <= 0 || actualH <= 0) return
+
+        lastViewWidth = actualW
+        lastViewHeight = actualH
+
         val matrix = Matrix()
-        val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+        val viewRect = RectF(0f, 0f, actualW.toFloat(), actualH.toFloat())
         val centerX = viewRect.centerX()
         val centerY = viewRect.centerY()
 
@@ -81,7 +84,7 @@ class AutoFitTextureView @JvmOverloads constructor(
                 // When device rotates to landscape, the camera HAL delivers the buffer
                 // oriented relative to the natural portrait mode. Rotate and scale buffer
                 // rect so landscape preview is 100% upright with pristine 16:9 aspect ratio.
-                val bufferRect = RectF(0f, 0f, viewHeight.toFloat(), viewWidth.toFloat())
+                val bufferRect = RectF(0f, 0f, actualH.toFloat(), actualW.toFloat())
                 bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
                 matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
 
@@ -103,6 +106,9 @@ class AutoFitTextureView @JvmOverloads constructor(
             }
         }
 
+        // Exact same logic as Windows BouleCam Studio:
+        // Front camera naturally mirrors (selfie mode). If isMirrored is toggled, it inverts it.
+        // Back camera naturally does NOT mirror. If isMirrored is toggled, it mirrors it.
         val shouldFlipH = if (isFrontCamera) !isMirrored else isMirrored
         if (shouldFlipH) {
             matrix.postScale(-1f, 1f, centerX, centerY)
@@ -111,12 +117,14 @@ class AutoFitTextureView @JvmOverloads constructor(
         setTransform(matrix)
     }
 
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (w > 0 && h > 0 && lastDisplayRotation != -1) {
+        if (w > 0 && h > 0) {
+            val rot = if (lastDisplayRotation != -1) lastDisplayRotation else Surface.ROTATION_0
             configureTransform(
                 w, h, 
-                lastDisplayRotation, 
+                rot, 
                 lastIsFrontCamera, 
                 lastIsMirrored, 
                 lastManualRotation180

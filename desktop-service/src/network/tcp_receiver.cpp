@@ -565,13 +565,14 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 std::lock_guard<std::mutex> lock(m_clientsMutex);
 
                 // PRIORITY 1: Check if this device has a LOCKED camera slot
+                bool isGenericDev = (devName.empty() || devName == "Móvil" || devName == "BouleCam Mobile" || devName == "Desconocido");
                 for (auto& lockPair : m_lockedSlots) {
                     if (!lockPair.second.isLocked) continue;
 
                     bool uidMatch = (!devUid.empty() && lockPair.second.uniqueId == devUid);
                     bool substringMatch = (!devUid.empty() && !lockPair.second.uniqueId.empty() &&
                         (lockPair.second.uniqueId.find(devUid) != std::string::npos || devUid.find(lockPair.second.uniqueId) != std::string::npos));
-                    bool nameMatch = (!devName.empty() && (lockPair.second.deviceName == devName || lockPair.second.uniqueId == ("dev_" + devName)));
+                    bool nameMatch = (!isGenericDev && (lockPair.second.deviceName == devName || lockPair.second.uniqueId == ("dev_" + devName)));
 
                     if (uidMatch || substringMatch || nameMatch) {
                         assignedId = lockPair.first;
@@ -654,7 +655,7 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                     // PRIORITY 2: Not locked. Check if reconnecting to an existing slot
                     for (auto& pair : m_clients) {
                         bool sameUid = (!devUid.empty() && pair.second.uniqueId == devUid);
-                        bool sameDev = (!devName.empty() && pair.second.deviceName == devName);
+                        bool sameDev = (!isGenericDev && pair.second.deviceName == devName);
 
                         if (sameUid || sameDev) {
                             assignedId = pair.first;
@@ -663,7 +664,9 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                             }
                             pair.second.socket = clientSocket;
                             pair.second.port = clientPort;
-                            pair.second.deviceName = (!pair.second.deviceName.empty()) ? pair.second.deviceName : devName;
+                            if (!devName.empty()) {
+                                pair.second.deviceName = devName;
+                            }
                             pair.second.uniqueId = devUid;
                             pair.second.ip = clientIp;
                             pair.second.deviceIdRef = deviceIdRef;

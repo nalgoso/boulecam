@@ -30,6 +30,10 @@ let isDimScreenActive = false;
 let lastDevicesList = [];
 let unlinkedCamIds = new Set();
 
+// WiFi dropout grace: keep showing stream for this many ms after last real connection
+const WIFI_GRACE_MS = 3500; // 3.5 seconds — covers brief WiFi reconnects and TCP retries
+let lastConnectedTimestamp = 0;
+
 function loadCustomNames() {
   try {
     const raw = localStorage.getItem('boulecam_custom_names');
@@ -65,6 +69,34 @@ function getDeviceKey(camId, deviceName) {
     return 'dev_' + deviceName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
   }
   return 'cam_' + camId;
+}
+
+function getDeviceDisplayName(camId, dev) {
+  const d = dev || (lastDevicesList || []).find(x => x.id === camId);
+  if (!d) {
+    return customCamNames[camId] || `Cam ${camId}`;
+  }
+
+  // 1. Device-specific custom name (keyed by device's uniqueId)
+  if (d.uniqueId && customCamNames[d.uniqueId]) {
+    return customCamNames[d.uniqueId];
+  }
+
+  // 2. If slot is locked, use the locked custom slot name
+  if (d.isLocked) {
+    if (customCamNames[d.id]) return customCamNames[d.id];
+    if (d.name && d.name.trim() && d.name !== 'Móvil' && d.name !== 'Desconocido' && d.name !== 'BouleCam Mobile') {
+      return d.name.trim();
+    }
+  }
+
+  // 3. Unlocked device: NEVER use a stale numerical slot-based name!
+  // Always use the real device name sent by Android (e.g. "Samsung SM-T500", "Redmi Note 10")
+  if (d.name && d.name.trim() && d.name !== 'Móvil' && d.name !== 'Desconocido' && d.name !== 'BouleCam Mobile') {
+    return d.name.trim();
+  }
+
+  return `Cam ${d.id}`;
 }
 
 function loadAllConfigs() {
@@ -246,6 +278,7 @@ function applyActiveConfigToUI(syncHardware = true) {
     sendCommand(2, isTorchOn ? 1 : 0);
     sendCommand(8, isMicEnabled ? 1 : 0);
     sendCommand(10, isDimScreenActive ? 1 : 0);
+    sendCommand(12, isMirrored ? 1 : 0);
     if ((cfg.isoIndex || 0) > 0) sendCommand(3, ISO_VALUES[cfg.isoIndex]);
     if ((cfg.evValue || 0) !== 0) sendCommand(5, cfg.evValue);
     if ((cfg.shutterIndex || 0) > 0) sendCommand(4, 0, SHUTTER_VALUES[cfg.shutterIndex].ns);
@@ -257,6 +290,7 @@ function applyActiveConfigToUI(syncHardware = true) {
 async function selectCamera(camId) {
   if (activeCamId === camId) return;
   activeCamId = camId;
+  lastActiveDeviceId = camId; // Sync so polling doesn't override manual selection
   try {
     await fetch(`${API_BASE}/api/select_cam?cam=${camId}`, { method: 'POST' });
   } catch (err) {}
@@ -266,12 +300,15 @@ async function selectCamera(camId) {
 function applyVideoTransform() {
   const cfg = getActiveConfig();
   const rot = (cfg.manualRotation || 0) % 360;
-  const scale = cfg.isMirrored ? -1 : 1;
+  const isFront = (cfg.currentLens === 1 || currentLens === 1);
+  // Front camera naturally mirrors (selfie mode). If isMirrored is toggled, it inverts it.
+  const shouldMirror = isFront ? !cfg.isMirrored : !!cfg.isMirrored;
+  const scale = shouldMirror ? -1 : 1;
   liveStreamImg.style.transform = `rotate(${rot}deg) scaleX(${scale})`;
   updateObsBox(activeCamId);
 
   // Sync live transform directly with C++ backend and OBS Browser Source in real-time
-  fetch(`${API_BASE}/api/cam_transform?cam=${activeCamId}&mirror=${cfg.isMirrored ? 1 : 0}&rot=${rot}`, { method: 'POST' }).catch(() => {});
+  fetch(`${API_BASE}/api/cam_transform?cam=${activeCamId}&mirror=${shouldMirror ? 1 : 0}&rot=${rot}`, { method: 'POST' }).catch(() => {});
 }
 
 function updateObsBox(camId) {
@@ -283,8 +320,9 @@ function updateObsBox(camId) {
     inputObsUrl.value = `http://127.0.0.1:8090/obs/${camId}`;
   }
   if (obsCamBadge) {
-    const customName = customCamNames[camId];
-    obsCamBadge.textContent = customName ? `Cam ${camId} (${customName})` : `Cam ${camId}`;
+    const dev = (lastDevicesList || []).find(d => d.id === camId);
+    const displayName = getDeviceDisplayName(camId, dev);
+    obsCamBadge.textContent = (displayName && displayName !== `Cam ${camId}`) ? `Cam ${camId} (${displayName})` : `Cam ${camId}`;
   }
   if (obsLockBadge) {
     const dev = (lastDevicesList || []).find(d => d.id === camId);
@@ -333,14 +371,29 @@ function setupModals() {
       const targetId = currentEditTargetId;
       const newNum = parseInt(editCamNumber.value);
       const newName = editCamName.value.trim();
+      const editCamLock = document.getElementById('edit-cam-lock');
+      const isLockedCheck = editCamLock ? editCamLock.checked : false;
+      const dev = (lastDevicesList || []).find(d => d.id === newNum || d.id === targetId);
+      const finalUid = dev?.uniqueId || '';
 
       // Update name
       if (newName) {
-        customCamNames[newNum] = newName;
+        if (finalUid) {
+          customCamNames[finalUid] = newName;
+        }
+        if (isLockedCheck) {
+          customCamNames[newNum] = newName;
+        } else {
+          // Unlocked: remove slot-based key so other devices connecting to this slot don't inherit it
+          delete customCamNames[newNum];
+          delete customCamNames[targetId];
+        }
         saveCustomNames(customCamNames);
         await fetch(`${API_BASE}/api/rename_cam?cam=${targetId}&name=${encodeURIComponent(newName)}`, { method: 'POST' }).catch(() => {});
-      } else if (customCamNames[targetId]) {
+      } else {
+        if (finalUid) delete customCamNames[finalUid];
         delete customCamNames[targetId];
+        delete customCamNames[newNum];
         saveCustomNames(customCamNames);
       }
 
@@ -350,7 +403,7 @@ function setupModals() {
           await fetch(`${API_BASE}/api/swap_cams?camA=${targetId}&camB=${newNum}`, { method: 'POST' });
         } catch (e) {}
 
-        if (customCamNames[targetId] && !customCamNames[newNum]) {
+        if (isLockedCheck && customCamNames[targetId] && !customCamNames[newNum]) {
           customCamNames[newNum] = customCamNames[targetId];
           delete customCamNames[targetId];
           saveCustomNames(customCamNames);
@@ -362,11 +415,7 @@ function setupModals() {
       }
 
       // Update lock state if checkbox exists
-      const editCamLock = document.getElementById('edit-cam-lock');
-      const isLockedCheck = editCamLock ? editCamLock.checked : false;
-      const dev = (lastDevicesList || []).find(d => d.id === newNum || d.id === targetId);
-      const finalName = newName || customCamNames[newNum] || dev?.name || `Cam ${newNum}`;
-      const finalUid = dev?.uniqueId || '';
+      const finalName = newName || (finalUid && customCamNames[finalUid]) || (isLockedCheck && customCamNames[newNum]) || dev?.name || `Cam ${newNum}`;
       try {
         await fetch(`${API_BASE}/api/lock_cam?cam=${newNum}&lock=${isLockedCheck ? 1 : 0}&uid=${encodeURIComponent(finalUid)}&name=${encodeURIComponent(finalName)}`, { method: 'POST' });
       } catch (e) {}
@@ -452,7 +501,7 @@ function openEditModal(camId) {
     if (i === camId) {
       label += ' (Actual)';
     } else if (occupant) {
-      const occName = customCamNames[occupant.id] || occupant.name || 'Móvil';
+      const occName = getDeviceDisplayName(occupant.id, occupant);
       label += ` (Intercambiar con ${occName})`;
     } else {
       label += ' (Canal libre)';
@@ -460,7 +509,9 @@ function openEditModal(camId) {
     selectHtml += `<option value="${i}" ${i === camId ? 'selected' : ''}>${label}</option>`;
   }
   editCamNumber.innerHTML = selectHtml;
-  editCamName.value = customCamNames[camId] || (dev?.name !== 'Móvil' ? (dev?.name || '') : '');
+  editCamName.value = (dev?.uniqueId && customCamNames[dev.uniqueId]) ||
+                      (dev?.isLocked && customCamNames[camId]) ||
+                      (dev?.name && dev.name !== 'Móvil' && dev.name !== 'Desconocido' && dev.name !== 'BouleCam Mobile' ? dev.name : '');
   modalEdit.style.display = 'flex';
 }
 
@@ -471,7 +522,7 @@ function openUnlinkModal(camId) {
 
   currentUnlinkTargetId = camId;
   const dev = (lastDevicesList || []).find(d => d.id === camId);
-  const devName = customCamNames[camId] || dev?.name || `Cam ${camId}`;
+  const devName = getDeviceDisplayName(camId, dev);
 
   if (modalUnlinkText) {
     modalUnlinkText.textContent = `¿Seguro que deseas desvincular ${devName} (Cam ${camId})? Se cerrará su conexión y se dejará de usar en BouleCam.`;
@@ -479,12 +530,27 @@ function openUnlinkModal(camId) {
   modalUnlink.style.display = 'flex';
 }
 
+let lastRenderedTabsFingerprint = '';
+
 // Render dynamic camera selector tabs
 function renderDeviceTabs(devices, activeId) {
   if (!cameraSelectorBar) return;
   lastDevicesList = devices || [];
 
   const availableDevices = (devices || []).filter(d => !unlinkedCamIds.has(d.id));
+
+  // Fingerprint state of all tabs: skip innerHTML rebuild if identical to stop hover flicker
+  const currentFingerprint = availableDevices.length === 0
+    ? 'empty'
+    : availableDevices.map(d => 
+        `${d.id}:${d.id === activeId}:${!!d.isLocked}:${d.connected !== false}:${d.isVertical}:${getDeviceDisplayName(d.id, d)}`
+      ).join('|');
+
+  if (currentFingerprint === lastRenderedTabsFingerprint && cameraSelectorBar.children.length > 0) {
+    updateObsBox(activeId);
+    return;
+  }
+  lastRenderedTabsFingerprint = currentFingerprint;
 
   if (availableDevices.length === 0) {
     cameraSelectorBar.innerHTML = `
@@ -502,7 +568,7 @@ function renderDeviceTabs(devices, activeId) {
     const isLocked = !!d.isLocked;
     const isOffline = d.connected === false;
     const isVert = d.isVertical ? ' (Vertical)' : '';
-    const name = customCamNames[d.id] || d.name;
+    const name = getDeviceDisplayName(d.id, d);
     const offlineSuffix = isOffline ? ' (Desconectado)' : '';
     const lockBadge = isLocked ? ' 🔒' : '';
 
@@ -539,8 +605,17 @@ function renderDeviceTabs(devices, activeId) {
       const id = parseInt(btn.getAttribute('data-cam-id'));
       const dev = (lastDevicesList || []).find(d => d.id === id);
       const newLockState = !dev?.isLocked;
-      const devName = customCamNames[id] || dev?.name || `Cam ${id}`;
+      const devName = getDeviceDisplayName(id, dev);
       const devUid = dev?.uniqueId || '';
+
+      if (!newLockState) {
+        delete customCamNames[id];
+        saveCustomNames(customCamNames);
+      } else {
+        customCamNames[id] = devName;
+        if (devUid) customCamNames[devUid] = devName;
+        saveCustomNames(customCamNames);
+      }
 
       try {
         const resp = await fetch(`${API_BASE}/api/lock_cam?cam=${id}&lock=${newLockState ? 1 : 0}&uid=${encodeURIComponent(devUid)}&name=${encodeURIComponent(devName)}`, { method: 'POST' });
@@ -608,9 +683,18 @@ function updateUIStatus(data) {
   const curDevIsOnline = curDev && (curDev.connected !== false);
   isConnected = hasConnected && curDevIsOnline && data.connected;
 
+  // WiFi grace period: brief dropouts (TCP reconnect, channel switch, packet loss)
+  // don't immediately hide the stream. Only go dark after WIFI_GRACE_MS of real absence.
+  if (isConnected) {
+    lastConnectedTimestamp = Date.now();
+  } else if ((Date.now() - lastConnectedTimestamp) < WIFI_GRACE_MS) {
+    // Still within grace window — keep stream alive visually
+    isConnected = true;
+  }
+
   if (curDev && !curDevIsOnline && curDev.isLocked) {
     statusDot.classList.remove('connected');
-    const devName = customCamNames[curDev.id] || curDev.name || `Cam ${curDev.id}`;
+    const devName = getDeviceDisplayName(curDev.id, curDev);
     statusText.textContent = `Cam ${curDev.id} reservada (Esperando a ${devName} 🔒)`;
     statusText.style.color = '#eab308';
     liveStreamImg.style.display = 'none';
@@ -629,7 +713,7 @@ function updateUIStatus(data) {
 
   if (isConnected && curDev) {
     statusDot.classList.add('connected');
-    const devName = customCamNames[curDev.id] || curDev.name || data.deviceName || 'Móvil';
+    const devName = getDeviceDisplayName(curDev.id, curDev);
     statusText.textContent = `Conectado: ${devName}`;
     statusText.style.color = 'var(--accent-green)';
 
@@ -741,14 +825,25 @@ function updateUIStatus(data) {
 
   // Detect active device change from server or fallback if current was unlinked
   const serverActiveId = data.activeDeviceId || 1;
-  if (!unlinkedCamIds.has(serverActiveId) && serverActiveId !== lastActiveDeviceId) {
-    lastActiveDeviceId = serverActiveId;
-    activeCamId = serverActiveId;
-    applyActiveConfigToUI(false);
-  } else if (unlinkedCamIds.has(activeCamId) && availableDevices.length > 0) {
+
+  if (unlinkedCamIds.has(activeCamId) && availableDevices.length > 0) {
+    // Current cam was unlinked — switch to the first available one
     activeCamId = availableDevices[0].id;
     lastActiveDeviceId = activeCamId;
     applyActiveConfigToUI(false);
+  } else if (!unlinkedCamIds.has(serverActiveId) && serverActiveId !== lastActiveDeviceId) {
+    // Server changed the active device (e.g. reconnect) AND the user hasn't manually
+    // selected a different camera. Only follow the server if activeCamId matches what
+    // we last told the server — i.e. the user hasn't overridden it.
+    if (activeCamId === lastActiveDeviceId) {
+      lastActiveDeviceId = serverActiveId;
+      activeCamId = serverActiveId;
+      applyActiveConfigToUI(false);
+    } else {
+      // User manually picked a camera that differs from server's suggestion: just
+      // record the server's value so we don't re-trigger this branch next poll.
+      lastActiveDeviceId = serverActiveId;
+    }
   }
 
   // Update Multi-Camera Tabs
@@ -800,17 +895,22 @@ async function fetchNextFrame() {
 function setupEvents() {
   // Circular Sliding Toggle (USB / WiFi)
   if (modeToggle) {
-    modeToggle.addEventListener('click', () => {
+    modeToggle.addEventListener('click', async () => {
       const curDev = (lastDevicesList || []).find(d => d.id === activeCamId);
-      if (curDev) {
-        if (!curDev.isUsb) {
-          showToast(`⚠️ ${curDev.name || 'Este dispositivo'} está conectado por WiFi (${curDev.ip || 'LAN'}). Conéctalo por cable USB a la PC para usar modo USB.`);
-        } else {
-          showToast('ℹ️ El dispositivo actual está transmitiendo por Cable USB.');
-        }
-      } else {
+      if (!curDev) {
         showToast('ℹ️ Esperando conexión de dispositivos...');
+        return;
       }
+
+      const wantUsb = !curDev.isUsb;
+      if (wantUsb) {
+        showToast('Cambiando a modo Cable USB...');
+        await sendCommand(11, 1);
+      } else {
+        showToast('Cambiando a modo Wi-Fi...');
+        await sendCommand(11, 0);
+      }
+      setTimeout(pollStatus, 400);
     });
   }
 
@@ -820,6 +920,7 @@ function setupEvents() {
       currentLens = currentLens === 0 ? 1 : 0;
       btnFlip.classList.toggle('active', currentLens === 1);
       saveCurrentConfig({ currentLens });
+      applyVideoTransform();
       await sendCommand(1, currentLens);
     });
   }
@@ -846,11 +947,12 @@ function setupEvents() {
 
   // Mirror Button (Espejar Video Horizontalmente)
   if (btnMirror) {
-    btnMirror.addEventListener('click', () => {
+    btnMirror.addEventListener('click', async () => {
       isMirrored = !isMirrored;
       btnMirror.classList.toggle('active-cyan', isMirrored);
       saveCurrentConfig({ isMirrored });
       applyVideoTransform();
+      await sendCommand(12, isMirrored ? 1 : 0);
     });
   }
 

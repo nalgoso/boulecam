@@ -92,6 +92,9 @@ class MainActivity : AppCompatActivity() {
     private var isDimScreenActive = false
     private var physicalOrientationDegrees = 0
     private var wifiToastShown = false
+    private var lastWifiHost: String? = null
+    private var lastWifiPort: Int = 8088
+    private var lastReportedDisplayRotation = -1
     private val cameraExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private var usbReceiver: BroadcastReceiver? = null
@@ -249,8 +252,11 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Modo Cable USB activado", Toast.LENGTH_SHORT).show()
         } else {
             wifiToastShown = false
+            if (!lastWifiHost.isNullOrEmpty()) {
+                sender?.setHost(lastWifiHost!!, lastWifiPort)
+            }
             discoveryManager?.start()
-            Toast.makeText(this, "Buscando PC por Wi-Fi automáticamente...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Modo Wi-Fi activado (buscando PC...)", Toast.LENGTH_SHORT).show()
         }
         updateConnectionButtonsUI()
     }
@@ -260,15 +266,15 @@ class MainActivity : AppCompatActivity() {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN) return
 
-                val newAngle = when (orientation) {
-                    in 45..134 -> 180   // Reverse landscape
-                    in 135..224 -> 270  // Inverted portrait
-                    in 225..314 -> 0    // Standard landscape
-                    else -> 90          // Standard vertical portrait
+                val currentDisplayRot = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    display?.rotation ?: Surface.ROTATION_0
+                } else {
+                    @Suppress("DEPRECATION")
+                    windowManager.defaultDisplay.rotation
                 }
 
-                if (newAngle != physicalOrientationDegrees) {
-                    physicalOrientationDegrees = newAngle
+                if (currentDisplayRot != lastReportedDisplayRotation) {
+                    lastReportedDisplayRotation = currentDisplayRot
                     updatePreviewTransform()
                 }
             }
@@ -304,19 +310,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         val isFront = cameraPipeline?.getCurrentLensFacing() == 1
-        if (tv.width > 0 && tv.height > 0) {
-            tv.configureTransform(tv.width, tv.height, displayRotation, isFront, manualMirror, manualRotation180)
-        }
+        tv.configureTransform(tv.width, tv.height, displayRotation, isFront, manualMirror, manualRotation180)
 
-        // Map configuration & display rotation to exact stream orientation metadata:
-        // 90 / 270 = Vertical Streaming (1080x1920)
-        // 0 / 180  = Horizontal Streaming (1920x1080)
-        val baseRot = if (isScreenLandscape) {
-            if (displayRotation == Surface.ROTATION_270 || displayRotation == Surface.ROTATION_180) 180 else 0
+        // Compute stream rotation using the ACTUAL sensor orientation from the camera hardware.
+        // Standard Camera2 formulas (see Android documentation):
+        //   Back  camera: (sensorOrientation - deviceRotationDegrees + 360) % 360
+        //   Front camera: (sensorOrientation + deviceRotationDegrees + 360) % 360
+        // The front camera formula differs because its sensor is mirrored relative to the back.
+        // Using displayRotation * 90 converts ROTATION_0/90/180/270 to 0°/90°/180°/270°.
+        val sensorOrientation = cameraPipeline?.getSensorOrientation() ?: 90
+        val displayRotDegrees = displayRotation * 90
+
+        val baseRot = if (isFront) {
+            (sensorOrientation + displayRotDegrees + 360) % 360
         } else {
-            if (displayRotation == Surface.ROTATION_180) 270 else 90
+            (sensorOrientation - displayRotDegrees + 360) % 360
         }
         physicalOrientationDegrees = if (manualRotation180) (baseRot + 180) % 360 else baseRot
+    }
+
+    private fun updateMirrorButtonUI() {
+        btnDockMirror?.imageTintList = ColorStateList.valueOf(
+            if (manualMirror) COLOR_LIGHT_GREEN else Color.WHITE
+        )
     }
 
     private fun toggleDockTrayVisibility() {
@@ -393,6 +409,8 @@ class MainActivity : AppCompatActivity() {
         // Bottom Quick Dock Controls (Matching Desktop Studio)
         btnDockFlip?.setOnClickListener {
             cameraPipeline?.switchCamera()
+            manualMirror = false
+            updateMirrorButtonUI()
             updatePreviewTransform()
         }
 
@@ -414,11 +432,15 @@ class MainActivity : AppCompatActivity() {
 
         btnDockMirror?.setOnClickListener {
             manualMirror = !manualMirror
-            btnDockMirror?.imageTintList = ColorStateList.valueOf(
-                if (manualMirror) COLOR_LIGHT_GREEN else Color.WHITE
-            )
+            updateMirrorButtonUI()
             updatePreviewTransform()
-            Toast.makeText(this, if (manualMirror) "Espejo activado" else "Espejo normal", Toast.LENGTH_SHORT).show()
+            val isFront = cameraPipeline?.getCurrentLensFacing() == 1
+            val isEffectivelyMirrored = if (isFront) !manualMirror else manualMirror
+            Toast.makeText(
+                this,
+                if (isEffectivelyMirrored) "Espejo activado (modo selfie natural)" else "Espejo desactivado",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
         btnDockRotate180?.setOnClickListener {
@@ -615,11 +637,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 } else {
                     // Wi-Fi PC detected
-                    if (!isUsbCableConnected || !isUsbMode) {
-                        if (isUsbMode && !isUsbCableConnected) {
-                            isUsbMode = false
-                            updateConnectionButtonsUI()
-                        }
+                    lastWifiHost = device.ip
+                    lastWifiPort = device.port
+                    if (!isUsbMode) {
                         if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
                             sender?.setHost(device.ip, device.port)
                         }
@@ -694,7 +714,10 @@ class MainActivity : AppCompatActivity() {
                 cameraPipeline = CameraCapturePipeline(
                     context = this@MainActivity,
                     previewSurface = pSurface,
-                    encoderSurface = encSurface
+                    encoderSurface = encSurface,
+                    onConfiguredCallback = {
+                        runOnUiThread { updatePreviewTransform() }
+                    }
                 )
                 cameraPipeline?.start()
             } catch (e: Exception) {
@@ -709,7 +732,11 @@ class MainActivity : AppCompatActivity() {
                 1 -> { // BOULECAM_ACTION_SET_LENS (0 = Back, 1 = Front)
                     cameraExecutor.execute {
                         cameraPipeline?.setLensFacing(cmd.intParam1)
-                        runOnUiThread { updatePreviewTransform() }
+                        runOnUiThread {
+                            manualMirror = false
+                            updateMirrorButtonUI()
+                            updatePreviewTransform()
+                        }
                     }
                 }
                 2 -> { // BOULECAM_ACTION_SET_TORCH (0 = Off, 1 = On)
@@ -747,6 +774,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 10 -> { // BOULECAM_ACTION_SET_DIM_SCREEN (0 = Normal, 1 = Dim)
                     setDimScreen(cmd.intParam1 != 0, notifyPeer = false)
+                }
+                11 -> { // BOULECAM_ACTION_SET_CONN_MODE (0 = WiFi, 1 = USB)
+                    val wantUsb = cmd.intParam1 != 0
+                    setConnectionMode(wantUsb)
+                }
+                12 -> { // BOULECAM_ACTION_SET_MIRROR (0 = Default, 1 = Inverted)
+                    manualMirror = cmd.intParam1 != 0
+                    updateMirrorButtonUI()
+                    updatePreviewTransform()
                 }
             }
         }

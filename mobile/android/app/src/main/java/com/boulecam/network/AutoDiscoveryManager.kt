@@ -20,7 +20,7 @@ class AutoDiscoveryManager(
 ) {
     private val isRunning = AtomicBoolean(false)
     private var multicastLock: WifiManager.MulticastLock? = null
-    private val executor = Executors.newFixedThreadPool(3)
+    private var executor: java.util.concurrent.ExecutorService? = null
 
     fun start() {
         if (isRunning.getAndSet(true)) return
@@ -33,24 +33,30 @@ class AutoDiscoveryManager(
             }
         } catch (ignored: Exception) {}
 
+        val exec = Executors.newFixedThreadPool(3)
+        executor = exec
+
         // Task 1: Check USB (127.0.0.1) first
-        executor.execute { checkUsbConnectionLoop() }
+        exec.execute { checkUsbConnectionLoop() }
 
         // Task 2: UDP Broadcast Listener & Beacon Transmitter
-        executor.execute { udpDiscoveryLoop() }
+        exec.execute { udpDiscoveryLoop() }
 
         // Task 3: Fast Subnet Scanner (Parallel TCP scan fallback)
-        executor.execute { subnetScannerLoop() }
+        exec.execute { subnetScannerLoop() }
     }
 
     fun stop() {
-        isRunning.set(false)
+        if (!isRunning.getAndSet(false)) return
         try {
             if (multicastLock?.isHeld == true) {
                 multicastLock?.release()
             }
         } catch (ignored: Exception) {}
-        executor.shutdownNow()
+        try {
+            executor?.shutdownNow()
+        } catch (ignored: Exception) {}
+        executor = null
     }
 
     /**

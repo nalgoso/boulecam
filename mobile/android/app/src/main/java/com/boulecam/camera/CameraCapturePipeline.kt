@@ -14,7 +14,8 @@ class CameraCapturePipeline(
     private val previewSurface: Surface?,
     private val encoderSurface: Surface,
     private val targetResolution: Size = Size(1920, 1080),
-    private val targetFps: Int = 60
+    private val targetFps: Int = 60,
+    private val onConfiguredCallback: (() -> Unit)? = null
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var cameraDevice: CameraDevice? = null
@@ -143,6 +144,7 @@ class CameraCapturePipeline(
 
                         currentRequestBuilder = requestBuilder
                         applyAllSettings()
+                        onConfiguredCallback?.invoke()
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }

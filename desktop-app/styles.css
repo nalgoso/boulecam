@@ -748,7 +748,8 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .cam-tab:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-main);
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
 }
 
 .cam-tab.active {
