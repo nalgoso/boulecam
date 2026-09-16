@@ -264,8 +264,8 @@ void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name,
     if (width > 0) dev.width = width;
     if (height > 0) dev.height = height;
 
-    if (deviceId == m_activeDeviceId.load() || !m_status.connected) {
-        m_status.connected = true;
+    m_status.connected = true;
+    if (deviceId == m_activeDeviceId.load() || m_status.deviceName == "Desconectado" || m_status.deviceName.empty()) {
         m_status.activeDeviceId = deviceId;
         m_status.deviceName = dev.name;
         m_status.deviceIp = ip;
@@ -589,7 +589,27 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             "<script>"
             "const v = document.getElementById('v');"
             "const snd = document.getElementById('snd');"
-            "if(snd){ snd.volume = 1.0; const playA = () => { snd.play().catch(()=>{}); }; playA(); window.addEventListener('click', playA); }"
+            "if(snd){"
+            "  snd.volume = 1.0;"
+            "  const playA = () => { snd.play().catch(()=>{}); };"
+            "  playA();"
+            "  window.addEventListener('click', playA);"
+            "  let recAudio = false;"
+            "  const retryAudio = () => {"
+            "    if(recAudio) return;"
+            "    recAudio = true;"
+            "    setTimeout(() => {"
+            "      recAudio = false;"
+            "      try {"
+            "        snd.src = '/api/audio?cam=" + camParamStr + "&t=' + Date.now();"
+            "        snd.load();"
+            "        snd.play().catch(()=>{});"
+            "      }catch(e){}"
+            "    }, 1200);"
+            "  };"
+            "  snd.addEventListener('error', retryAudio);"
+            "  snd.addEventListener('ended', retryAudio);"
+            "}"
             "const params = new URLSearchParams(window.location.search);"
             "let rot = parseInt(params.get('rot') || '0', 10);"
             "let mirror = params.get('mirror') === '1';"
@@ -627,7 +647,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             "async function loop(){"
             "  try {"
             "    const r = await fetch('/api/snapshot?cam=" + camParamStr + "');"
-            "    if(r.ok){"
+            "    if(r.ok && r.status === 200){"
             "      const b = await r.blob();"
             "      if(b.size > 1000){"
             "        const nu = URL.createObjectURL(b);"

@@ -291,10 +291,12 @@ async function selectCamera(camId) {
   if (activeCamId === camId) return;
   activeCamId = camId;
   lastActiveDeviceId = camId; // Sync so polling doesn't override manual selection
+  isFetchingFrame = false; // Reset in-flight state immediately for snappy tab response
   try {
     await fetch(`${API_BASE}/api/select_cam?cam=${camId}`, { method: 'POST' });
   } catch (err) {}
   applyActiveConfigToUI(true);
+  startStreamingLoop();
 }
 
 function applyVideoTransform() {
@@ -679,20 +681,23 @@ let lastActiveDeviceId = null;
 function updateUIStatus(data) {
   const availableDevices = (data.devices || []).filter(d => !unlinkedCamIds.has(d.id));
   const hasConnected = availableDevices.some(d => d.connected !== false);
-  const curDev = availableDevices.find(d => d.id === (data.activeDeviceId || activeCamId)) || availableDevices[0];
+  const curDev = availableDevices.find(d => d.id === activeCamId) || 
+                 availableDevices.find(d => d.id === data.activeDeviceId) || 
+                 availableDevices[0];
   const curDevIsOnline = curDev && (curDev.connected !== false);
-  isConnected = hasConnected && curDevIsOnline && data.connected;
 
-  // WiFi grace period: brief dropouts (TCP reconnect, channel switch, packet loss)
-  // don't immediately hide the stream. Only go dark after WIFI_GRACE_MS of real absence.
-  if (isConnected) {
+  // Connection state is driven by the actively viewed camera
+  if (curDevIsOnline) {
     lastConnectedTimestamp = Date.now();
+    isConnected = true;
   } else if ((Date.now() - lastConnectedTimestamp) < WIFI_GRACE_MS) {
     // Still within grace window — keep stream alive visually
     isConnected = true;
+  } else {
+    isConnected = false;
   }
 
-  if (curDev && !curDevIsOnline && curDev.isLocked) {
+  if (curDev && !curDevIsOnline && curDev.isLocked && !isConnected) {
     statusDot.classList.remove('connected');
     const devName = getDeviceDisplayName(curDev.id, curDev);
     statusText.textContent = `Cam ${curDev.id} reservada (Esperando a ${devName} 🔒)`;
@@ -708,6 +713,7 @@ function updateUIStatus(data) {
     if (badgeLatency) badgeLatency.textContent = `-- ms`;
     if (badgeBitrate) badgeBitrate.textContent = `0.0 Mbps`;
     renderDeviceTabs(data.devices, activeCamId);
+    startStreamingLoop();
     return;
   }
 
@@ -717,10 +723,7 @@ function updateUIStatus(data) {
     statusText.textContent = `Conectado: ${devName}`;
     statusText.style.color = 'var(--accent-green)';
 
-    if (!isStreamingActive) {
-      isStreamingActive = true;
-      requestAnimationFrame(fetchNextFrame);
-    }
+    startStreamingLoop();
 
     // Real Resolution from incoming stream
     const w = curDev.width || data.width || 0;
@@ -792,7 +795,6 @@ function updateUIStatus(data) {
       }
     }
   } else {
-    isStreamingActive = false;
     statusDot.classList.remove('connected');
     statusText.textContent = 'Esperando conexión...';
     statusText.style.color = 'var(--accent-orange)';
@@ -851,14 +853,26 @@ function updateUIStatus(data) {
 }
 
 let currentBlobUrl = null;
+let streamingLoopStarted = false;
 
-// Anti-freeze frame fetcher
+// Robust, self-healing continuous frame fetcher (never locks up or dies)
 async function fetchNextFrame() {
-  if (!isConnected || isFetchingFrame) return;
-  isFetchingFrame = true;
+  if (isFetchingFrame) {
+    requestAnimationFrame(fetchNextFrame);
+    return;
+  }
 
+  // If marked offline or disconnected, back off slightly and continue polling smoothly
+  if (!isConnected) {
+    setTimeout(() => {
+      requestAnimationFrame(fetchNextFrame);
+    }, 200);
+    return;
+  }
+
+  isFetchingFrame = true;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 350);
+  const timeoutId = setTimeout(() => controller.abort(), 2000);
 
   try {
     const res = await fetch(`${API_BASE}/api/snapshot?cam=${activeCamId}`, { signal: controller.signal });
@@ -879,15 +893,18 @@ async function fetchNextFrame() {
       }
     }
   } catch (err) {
-    // Timeout recovery
+    // Timeout or network recovery - ignore and proceed
   } finally {
     clearTimeout(timeoutId);
     isFetchingFrame = false;
-    if (isConnected) {
-      requestAnimationFrame(fetchNextFrame);
-    } else {
-      isStreamingActive = false;
-    }
+    requestAnimationFrame(fetchNextFrame);
+  }
+}
+
+function startStreamingLoop() {
+  if (!streamingLoopStarted) {
+    streamingLoopStarted = true;
+    requestAnimationFrame(fetchNextFrame);
   }
 }
 
@@ -1096,4 +1113,5 @@ function setupEvents() {
 // Start polling
 setInterval(pollStatus, 500);
 setupEvents();
+startStreamingLoop();
 pollStatus();
