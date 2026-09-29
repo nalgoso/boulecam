@@ -59,21 +59,58 @@ static std::vector<std::string> GetAttachedDeviceSerials() {
     std::string cmd = "\"" + adbExe + "\" devices";
     std::vector<std::string> serials;
 
-    FILE* pipe = _popen(cmd.c_str(), "r");
-    if (!pipe) return serials;
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
 
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-        std::string line(buffer);
-        size_t tabPos = line.find('\t');
-        if (tabPos != std::string::npos) {
-            std::string state = line.substr(tabPos + 1);
-            if (state.find("device") != std::string::npos) {
-                serials.push_back(line.substr(0, tabPos));
+    HANDLE hRead = NULL;
+    HANDLE hWrite = NULL;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return serials;
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+    si.wShowWindow = SW_HIDE;
+
+    std::vector<char> cmdVec(cmd.begin(), cmd.end());
+    cmdVec.push_back('\0');
+
+    if (CreateProcessA(NULL, cmdVec.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        CloseHandle(hWrite);
+        hWrite = NULL;
+
+        std::string output;
+        char buffer[256];
+        DWORD bytesRead = 0;
+        while (ReadFile(hRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+            buffer[bytesRead] = '\0';
+            output.append(buffer, bytesRead);
+        }
+
+        WaitForSingleObject(pi.hProcess, 2000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        std::istringstream stream(output);
+        std::string line;
+        while (std::getline(stream, line)) {
+            size_t tabPos = line.find('\t');
+            if (tabPos != std::string::npos) {
+                std::string state = line.substr(tabPos + 1);
+                if (state.find("device") != std::string::npos) {
+                    serials.push_back(line.substr(0, tabPos));
+                }
             }
         }
+    } else {
+        if (hWrite) CloseHandle(hWrite);
     }
-    _pclose(pipe);
+    if (hRead) CloseHandle(hRead);
+
     return serials;
 }
 

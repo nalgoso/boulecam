@@ -9,6 +9,7 @@ const DEFAULT_CAM_SETTINGS = {
   currentLens: 0, // 0 = back, 1 = front
   isTorchOn: false,
   isMicEnabled: true,
+  micGainDb: 0,
   isDimScreenActive: false,
   isoIndex: 0,
   evValue: 0,
@@ -23,6 +24,7 @@ let activeCamId = 1;
 let currentLens = 0;
 let isTorchOn = false;
 let isMicEnabled = true;
+let micGainDb = 0;
 let isAutoAF = true;
 let isMirrored = false;
 let manualRotation = 0;
@@ -231,6 +233,17 @@ function applyActiveConfigToUI(syncHardware = true) {
   if (btnFlip) btnFlip.classList.toggle('active', currentLens === 1);
   if (btnTorch) btnTorch.classList.toggle('active-torch', isTorchOn);
   if (btnMic) btnMic.classList.toggle('muted', !isMicEnabled);
+  const toggleAudio = document.getElementById('toggle-audio');
+  if (toggleAudio) toggleAudio.checked = isMicEnabled;
+
+  // Mic gain slider & label
+  const sliderMicGain = document.getElementById('slider-mic-gain');
+  const valMicGain = document.getElementById('val-mic-gain');
+  micGainDb = (cfg.micGainDb !== undefined) ? cfg.micGainDb : 0;
+  if (sliderMicGain) sliderMicGain.value = micGainDb;
+  if (valMicGain) {
+    valMicGain.textContent = micGainDb > 0 ? `+${micGainDb.toFixed(1)} dB` : `${micGainDb.toFixed(1)} dB`;
+  }
 
   if (btnDimScreen) {
     btnDimScreen.classList.toggle('active-dim', isDimScreenActive);
@@ -317,17 +330,17 @@ function updateObsBox(camId) {
   const inputObsUrl = document.getElementById('input-obs-url');
   const obsCamBadge = document.getElementById('obs-cam-badge');
   const obsLockBadge = document.getElementById('obs-lock-badge');
+  const settingsObsCamBadge = document.getElementById('settings-obs-cam-badge');
   if (inputObsUrl) {
     // Clean, permanent URL: automatically syncs mirror, rotation, mic and lens live in real-time
-    inputObsUrl.value = `http://127.0.0.1:8090/obs/${camId}`;
+    inputObsUrl.value = `${API_BASE}/obs/${camId}`;
   }
-  if (obsCamBadge) {
-    const dev = (lastDevicesList || []).find(d => d.id === camId);
-    const displayName = getDeviceDisplayName(camId, dev);
-    obsCamBadge.textContent = (displayName && displayName !== `Cam ${camId}`) ? `Cam ${camId} (${displayName})` : `Cam ${camId}`;
-  }
+  const dev = (lastDevicesList || []).find(d => d.id === camId);
+  const displayName = getDeviceDisplayName(camId, dev);
+  const label = (displayName && displayName !== `Cam ${camId}`) ? `Cam ${camId} (${displayName})` : `Cam ${camId}`;
+  if (obsCamBadge) obsCamBadge.textContent = label;
+  if (settingsObsCamBadge) settingsObsCamBadge.textContent = label;
   if (obsLockBadge) {
-    const dev = (lastDevicesList || []).find(d => d.id === camId);
     if (dev && dev.isLocked) {
       obsLockBadge.textContent = '🔒 Bloqueada';
       obsLockBadge.style.color = '#fef08a';
@@ -346,6 +359,49 @@ let currentUnlinkTargetId = null;
 let currentEditTargetId = null;
 
 function setupModals() {
+  // Modal Settings & Input Sources
+  const btnSettings = document.getElementById('btn-settings');
+  const modalSettings = document.getElementById('modal-settings');
+  const modalSettingsClose = document.getElementById('modal-settings-close');
+  const modalSettingsDone = document.getElementById('modal-settings-done');
+
+  const openSettingsModal = () => {
+    if (modalSettings) {
+      updateObsBox(activeCamId);
+      const tAudio = document.getElementById('toggle-audio');
+      if (tAudio) tAudio.checked = isMicEnabled;
+      modalSettings.style.display = 'flex';
+    }
+  };
+
+  const closeSettingsModal = () => {
+    if (modalSettings) modalSettings.style.display = 'none';
+  };
+
+  if (btnSettings) btnSettings.addEventListener('click', openSettingsModal);
+  if (modalSettingsClose) modalSettingsClose.addEventListener('click', closeSettingsModal);
+  if (modalSettingsDone) modalSettingsDone.addEventListener('click', closeSettingsModal);
+  if (modalSettings) {
+    modalSettings.addEventListener('click', (e) => {
+      if (e.target === modalSettings) closeSettingsModal();
+    });
+  }
+
+  // Circular (i) OBS Tooltip toggle
+  const obsTooltipBtn = document.getElementById('obs-tooltip-btn');
+  const obsTooltipContainer = document.getElementById('obs-tooltip-container');
+  if (obsTooltipBtn && obsTooltipContainer) {
+    obsTooltipBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      obsTooltipContainer.classList.toggle('active');
+    });
+    document.addEventListener('click', (e) => {
+      if (!obsTooltipContainer.contains(e.target)) {
+        obsTooltipContainer.classList.remove('active');
+      }
+    });
+  }
+
   // Modal Edit Cam
   const modalEdit = document.getElementById('modal-edit-cam');
   const modalEditClose = document.getElementById('modal-edit-close');
@@ -772,22 +828,28 @@ function updateUIStatus(data) {
 
     // Real Connection Type (Cable USB vs WiFi) with Sliding Circular Toggle
     const isDeviceUsb = (curDev.isUsb === true);
-    if (modeToggle) {
+    const mToggle = document.getElementById('settings-mode-toggle') || modeToggle;
+    const kIcon = document.getElementById('settings-knob-icon') || knobIcon;
+    const modeHint = document.getElementById('settings-mode-hint');
+
+    if (mToggle) {
       if (isDeviceUsb) {
-        modeToggle.classList.remove('disabled', 'mode-wifi');
-        modeToggle.classList.add('mode-usb');
-        modeToggle.title = '🔌 Conectado por Cable USB (Baja latencia)';
-        if (knobIcon) knobIcon.textContent = '🔌';
+        mToggle.classList.remove('disabled', 'mode-wifi');
+        mToggle.classList.add('mode-usb');
+        mToggle.title = '🔌 Conectado por Cable USB (Baja latencia)';
+        if (kIcon) kIcon.textContent = '🔌';
+        if (modeHint) modeHint.textContent = 'Cable USB (Baja latencia activa)';
         if (badgeMode) {
           badgeMode.textContent = 'USB';
           badgeMode.style.color = 'var(--accent-cyan)';
         }
       } else {
-        modeToggle.classList.remove('mode-usb');
-        modeToggle.classList.add('mode-wifi');
+        mToggle.classList.remove('mode-usb');
+        mToggle.classList.add('mode-wifi');
         const devIp = curDev.ip || data.activeDeviceIp || 'WiFi';
-        modeToggle.title = `📶 Conectado por WiFi (${devIp}). Conéctalo por cable a la PC para cambiar a USB.`;
-        if (knobIcon) knobIcon.textContent = '📶';
+        mToggle.title = `📶 Conectado por WiFi (${devIp}). Conéctalo por cable a la PC para cambiar a USB.`;
+        if (kIcon) kIcon.textContent = '📶';
+        if (modeHint) modeHint.textContent = `Wi-Fi (${devIp})`;
         if (badgeMode) {
           badgeMode.textContent = 'WiFi';
           badgeMode.style.color = 'var(--accent-green)';
@@ -807,19 +869,34 @@ function updateUIStatus(data) {
     if (badgeBitrate) badgeBitrate.textContent = '-- Mbps';
     if (badgeDevice) badgeDevice.textContent = 'Sin conexión';
 
-    if (modeToggle) {
+    const lblPcWifiIp = document.getElementById('lbl-pc-wifi-ip');
+    if (lblPcWifiIp) {
+      const validIps = (data.localIps || []).filter(ip => ip !== '127.0.0.1' && !ip.startsWith('169.254'));
+      if (validIps.length > 0) {
+        lblPcWifiIp.textContent = `${validIps[0]} (Puerto: 8088)`;
+      } else {
+        lblPcWifiIp.textContent = 'Esperando conexión de red...';
+      }
+    }
+
+    const mToggle = document.getElementById('settings-mode-toggle') || modeToggle;
+    const kIcon = document.getElementById('settings-knob-icon') || knobIcon;
+    const modeHint = document.getElementById('settings-mode-hint');
+    if (mToggle) {
       const usbAvailable = (data.usbConnected === true);
       if (usbAvailable) {
-        modeToggle.classList.remove('disabled', 'mode-wifi');
-        modeToggle.classList.add('mode-usb');
-        modeToggle.title = '🔌 Cable USB detectado en la PC';
-        if (knobIcon) knobIcon.textContent = '🔌';
+        mToggle.classList.remove('disabled', 'mode-wifi');
+        mToggle.classList.add('mode-usb');
+        mToggle.title = '🔌 Cable USB detectado en la PC';
+        if (kIcon) kIcon.textContent = '🔌';
+        if (modeHint) modeHint.textContent = 'Cable USB detectado';
         if (badgeMode) badgeMode.textContent = 'USB';
       } else {
-        modeToggle.classList.remove('mode-usb');
-        modeToggle.classList.add('mode-wifi');
-        modeToggle.title = 'Buscando dispositivos por WiFi y USB...';
-        if (knobIcon) knobIcon.textContent = '📶';
+        mToggle.classList.remove('mode-usb');
+        mToggle.classList.add('mode-wifi');
+        mToggle.title = 'Buscando dispositivos por WiFi y USB...';
+        if (kIcon) kIcon.textContent = '📶';
+        if (modeHint) modeHint.textContent = 'Buscando por Wi-Fi y USB...';
         if (badgeMode) badgeMode.textContent = 'WiFi';
       }
     }
@@ -847,6 +924,9 @@ function updateUIStatus(data) {
       lastActiveDeviceId = serverActiveId;
     }
   }
+
+  // Real-time Hardware Microphone Activity Meter (VU Meter)
+  renderAudioMeter(currentSmoothedAudioLevel);
 
   // Update Multi-Camera Tabs
   renderDeviceTabs(data.devices || [], activeCamId);
@@ -957,8 +1037,68 @@ function setupEvents() {
     btnMic.addEventListener('click', async () => {
       isMicEnabled = !isMicEnabled;
       btnMic.classList.toggle('muted', !isMicEnabled);
+      const tAudio = document.getElementById('toggle-audio');
+      if (tAudio) tAudio.checked = isMicEnabled;
       saveCurrentConfig({ isMicEnabled });
       await sendCommand(8, isMicEnabled ? 1 : 0);
+    });
+  }
+
+  // Settings Modal: Video Toggle
+  const toggleVideo = document.getElementById('toggle-video');
+  if (toggleVideo) {
+    toggleVideo.addEventListener('change', () => {
+      const isVideoActive = toggleVideo.checked;
+      if (!isVideoActive) {
+        liveStreamImg.style.visibility = 'hidden';
+        placeholderBox.style.display = 'flex';
+        const h3 = placeholderBox.querySelector('h3');
+        const p = placeholderBox.querySelector('p');
+        if (h3) h3.textContent = 'Transmisión de Video Desactivada';
+        if (p) p.textContent = 'Activa el interruptor en Ajustes para reanudar el video';
+        showToast('Transmisión de video desactivada');
+      } else {
+        liveStreamImg.style.visibility = 'visible';
+        if (isConnected) {
+          placeholderBox.style.display = 'none';
+          liveStreamImg.style.display = 'block';
+        }
+        showToast('Transmisión de video activada');
+      }
+    });
+  }
+
+  // Settings Modal: Audio Toggle
+  const toggleAudio = document.getElementById('toggle-audio');
+  if (toggleAudio) {
+    toggleAudio.checked = isMicEnabled;
+    toggleAudio.addEventListener('change', async () => {
+      isMicEnabled = toggleAudio.checked;
+      if (btnMic) btnMic.classList.toggle('muted', !isMicEnabled);
+      saveCurrentConfig({ isMicEnabled });
+      await sendCommand(8, isMicEnabled ? 1 : 0);
+      showToast(isMicEnabled ? 'Transmisión de audio activada' : 'Transmisión de audio silenciada');
+    });
+  }
+
+  // Settings Modal: Connection Mode Toggle (USB / WiFi)
+  const settingsModeToggle = document.getElementById('settings-mode-toggle');
+  if (settingsModeToggle) {
+    settingsModeToggle.addEventListener('click', async () => {
+      const curDev = (lastDevicesList || []).find(d => d.id === activeCamId);
+      if (!curDev) {
+        showToast('ℹ️ Esperando conexión de dispositivos...');
+        return;
+      }
+      const wantUsb = !curDev.isUsb;
+      if (wantUsb) {
+        showToast('Cambiando a modo Cable USB...');
+        await sendCommand(11, 1);
+      } else {
+        showToast('Cambiando a modo Wi-Fi...');
+        await sendCommand(11, 0);
+      }
+      setTimeout(pollStatus, 400);
     });
   }
 
@@ -1084,6 +1224,23 @@ function setupEvents() {
     });
   }
 
+  // Windows-Style Microphone Gain (dB) Slider
+  const sliderMicGain = document.getElementById('slider-mic-gain');
+  const valMicGain = document.getElementById('val-mic-gain');
+  if (sliderMicGain) {
+    sliderMicGain.addEventListener('input', async (e) => {
+      const val = parseFloat(e.target.value);
+      micGainDb = val;
+      if (valMicGain) {
+        valMicGain.textContent = val > 0 ? `+${val.toFixed(1)} dB` : `${val.toFixed(1)} dB`;
+      }
+      saveCurrentConfig({ micGainDb: val });
+      try {
+        await fetch(`${API_BASE}/api/mic/gain?cam=${activeCamId}&db=${val}`, { method: 'POST' });
+      } catch (err) {}
+    });
+  }
+
   // Force Rescan / Device Discovery Button
   const btnRescan = document.getElementById('btn-rescan');
   if (btnRescan) {
@@ -1103,6 +1260,7 @@ function setupEvents() {
     });
   }
 
+
   // Initialize modal dialogs
   setupModals();
 
@@ -1110,8 +1268,106 @@ function setupEvents() {
   applyActiveConfigToUI(false);
 }
 
+let currentSmoothedAudioLevel = 0;
+let currentPeakHoldLevel = 0;
+let peakHoldDecayFrames = 0;
+let isFastPollingAudio = false;
+
+function renderAudioMeter(lvl, peakVal) {
+  const vuFill = document.getElementById('vu-meter-fill');
+  const vuPeak = document.getElementById('vu-meter-peak');
+  const valAudioLevel = document.getElementById('val-audio-level');
+  const audioMeterIcon = document.getElementById('audio-meter-icon');
+
+  const effectiveLvl = isMicEnabled ? Math.min(100, Math.max(0, lvl)) : 0;
+  const effectivePeak = isMicEnabled ? Math.min(100, Math.max(0, peakVal !== undefined ? peakVal : lvl)) : 0;
+
+  if (vuFill) {
+    vuFill.style.width = `${effectiveLvl}%`;
+    if (!isMicEnabled) {
+      vuFill.style.opacity = '0.3';
+    } else {
+      vuFill.style.opacity = '1';
+    }
+  }
+
+  if (vuPeak) {
+    if (isMicEnabled && effectivePeak > 2) {
+      vuPeak.style.display = 'block';
+      vuPeak.style.left = `${Math.min(99, effectivePeak)}%`;
+    } else {
+      vuPeak.style.display = 'none';
+    }
+  }
+
+  if (valAudioLevel) {
+    if (!isMicEnabled) {
+      valAudioLevel.textContent = 'Mute';
+      valAudioLevel.style.color = 'var(--text-muted)';
+    } else {
+      valAudioLevel.textContent = `${effectiveLvl}%`;
+      if (effectiveLvl > 80) {
+        valAudioLevel.style.color = 'var(--accent-red)';
+      } else if (effectiveLvl > 50) {
+        valAudioLevel.style.color = '#eab308';
+      } else if (effectiveLvl > 0) {
+        valAudioLevel.style.color = 'var(--color-light-green)';
+      } else {
+        valAudioLevel.style.color = 'var(--text-muted)';
+      }
+    }
+  }
+
+  if (audioMeterIcon) {
+    audioMeterIcon.textContent = isMicEnabled ? '🎙️' : '🔇';
+  }
+}
+
+async function fastPollAudioLevel() {
+  if (isFastPollingAudio) return;
+  isFastPollingAudio = true;
+  try {
+    if (!isConnected || !isMicEnabled) {
+      if (currentSmoothedAudioLevel > 0) {
+        currentSmoothedAudioLevel = Math.max(0, Math.round(currentSmoothedAudioLevel * 0.7));
+      }
+      currentPeakHoldLevel = Math.max(0, Math.round(currentPeakHoldLevel * 0.7));
+      renderAudioMeter(currentSmoothedAudioLevel, currentPeakHoldLevel);
+      return;
+    }
+    const res = await fetch(`${API_BASE}/api/audio_level?cam=${activeCamId}`);
+    if (res.ok) {
+      const data = await res.json();
+      const peak = data.level !== undefined ? data.level : 0;
+      if (peak >= currentSmoothedAudioLevel) {
+        currentSmoothedAudioLevel = peak;
+      } else {
+        currentSmoothedAudioLevel = Math.max(0, Math.round(currentSmoothedAudioLevel * 0.85));
+      }
+
+      // Windows-style Peak Hold logic
+      if (peak >= currentPeakHoldLevel) {
+        currentPeakHoldLevel = peak;
+        peakHoldDecayFrames = 15; // Hold peak for ~500ms (15 frames at 33ms)
+      } else if (peakHoldDecayFrames > 0) {
+        peakHoldDecayFrames--;
+      } else {
+        currentPeakHoldLevel = Math.max(currentSmoothedAudioLevel, Math.round(currentPeakHoldLevel * 0.92));
+      }
+
+      renderAudioMeter(currentSmoothedAudioLevel, currentPeakHoldLevel);
+    }
+  } catch (e) {
+  } finally {
+    isFastPollingAudio = false;
+  }
+}
+
 // Start polling
 setInterval(pollStatus, 500);
+setInterval(fastPollAudioLevel, 33);
 setupEvents();
 startStreamingLoop();
 pollStatus();
+fastPollAudioLevel();
+

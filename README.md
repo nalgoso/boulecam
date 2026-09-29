@@ -84,18 +84,28 @@ Los instaladores y ejecutables finales están disponibles en la sección de [Rel
    - Toca el toggle superior para seleccionar **Wi-Fi**.
    - El teléfono detectará la PC en tu red local automáticamente y comenzará a transmitir.
 
-### 3. Configuración en OBS Studio
-1. En OBS Studio, añade una fuente de tipo **Navegador** (*Browser Source*).
-2. En la casilla de URL, ingresa:
-   - Para la primera cámara: `http://127.0.0.1:8090/obs/1`
-   - Para la segunda cámara: `http://127.0.0.1:8090/obs/2`
-3. Ajusta el ancho y alto según el modo:
-   - **Horizontal**: Ancho `1920`, Alto `1080`.
-   - **Vertical**: Ancho `1080`, Alto `1920`.
-4. **Para habilitar el micrófono en OBS**:
-   - Marca la casilla: **`[✓] Controlar audio mediante OBS`** (o *Control audio via OBS*).
-   - Haz clic en **Aceptar**.
-   - Verás aparecer la barra de sonido en el **Mezclador de Audio de OBS**.
+### 3. Configuración en OBS Studio (Dispositivos Nativos)
+
+Para evitar problemas de compatibilidad y bloqueos de audio de los navegadores, **BouleCam opera como dispositivos nativos de entrada de Windows y OBS Studio**:
+
+#### 📹 A. Video Nativo (Cámara Web Directa):
+1. Ejecuta `register.bat` como Administrador (o `Instalar-Camara-Virtual.bat`).
+2. En OBS Studio, en el panel **Fuentes**, haz clic en **`[+]`** y selecciona **Dispositivo de captura de video**.
+3. En el menú desplegable de dispositivos, selecciona **`BouleCam Virtual Camera`**.
+4. ¡Listo! La cámara transmitirá con aceleración por hardware Media Foundation a 60 FPS con ultra-baja latencia.
+
+#### 🎙️ B. Audio Nativo (Micrófono Directo en el Mezclador de OBS):
+1. Ejecuta `Instalar-Audio-Virtual.bat` (o acéptalo al correr `register.bat`). Esto instalará el driver firmado de cable de audio virtual (VB-Audio Virtual Cable).
+2. Abre `BouleCam.exe` (el servidor receptor detectará y enlazará automáticamente el audio del móvil con el cable virtual).
+3. En OBS Studio, en el panel **Fuentes**, haz clic en **`[+]`** y selecciona **Dispositivo de captura de audio**.
+4. En el menú desplegable, selecciona **`CABLE Output (VB-Audio Virtual Cable)`**.
+5. ¡Listo! El micrófono del teléfono ingresará directamente en el **Mezclador de Audio de OBS**. Podrás:
+   - Ver el vúmetro en tiempo real subiendo y bajando según hables al móvil.
+   - Ajustar el volumen con el fader en decibelios (dB).
+   - Aplicar filtros profesionales nativos de OBS (Supresión de ruido RNNoise, Puerta de ruido, Compresor y Limitador).
+
+#### 🌐 C. Fuente de Navegador (Alternativa opcional):
+- Si deseas integrar la señal como Browser Source, puedes seguir usando la URL `http://127.0.0.1:8090/obs/1` (o `/obs/2` para multi-cámara).
 
 ---
 

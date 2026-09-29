@@ -17,6 +17,7 @@ public:
 
     bool Start();
     void Stop();
+    void TriggerBroadcast();
 
 private:
     void BeaconWorker();

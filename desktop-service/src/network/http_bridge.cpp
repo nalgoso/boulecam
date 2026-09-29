@@ -1,5 +1,6 @@
 #include "http_bridge.h"
 #include "tcp_receiver.h"
+#include "../audio/audio_output_manager.h"
 #include <iostream>
 #include <sstream>
 #include <iphlpapi.h>
@@ -126,30 +127,80 @@ static void ConvertNV12ToBMP(const uint8_t* nv12, uint32_t width, uint32_t heigh
     }
 }
 
-static std::vector<std::string> GetLocalIPv4Addresses() {
-    std::vector<std::string> ips;
-    ULONG outBufLen = 15000;
-    PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
-    if (!pAddresses) return ips;
+struct RankedIp {
+    std::string ip;
+    int priority; // lower is higher priority
+};
 
-    if (GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen) == ERROR_BUFFER_OVERFLOW) {
+static std::vector<std::string> GetLocalIPv4Addresses() {
+    std::vector<RankedIp> ranked;
+    ULONG outBufLen = 32000;
+    PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+    if (!pAddresses) return {};
+
+    DWORD dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+    if (dwRet == ERROR_BUFFER_OVERFLOW) {
         free(pAddresses);
         pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+        if (pAddresses) {
+            dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+        }
     }
 
-    if (pAddresses && GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen) == NO_ERROR) {
+    if (pAddresses && dwRet == NO_ERROR) {
         for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr; pCurr = pCurr->Next) {
-            if (pCurr->OperStatus != IfOperStatusUp) continue;
+            if (pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+
+            std::wstring desc = pCurr->Description ? pCurr->Description : L"";
+            std::wstring friendly = pCurr->FriendlyName ? pCurr->FriendlyName : L"";
+            bool isVirtual = (friendly.find(L"vEthernet") != std::wstring::npos ||
+                              friendly.find(L"Tailscale") != std::wstring::npos ||
+                              friendly.find(L"VirtualBox") != std::wstring::npos ||
+                              friendly.find(L"VMware") != std::wstring::npos ||
+                              friendly.find(L"ZeroTier") != std::wstring::npos ||
+                              desc.find(L"Virtual") != std::wstring::npos ||
+                              desc.find(L"Hyper-V") != std::wstring::npos);
+
+            bool hasGateway = (pCurr->FirstGatewayAddress != nullptr);
+            bool isWifi = (pCurr->IfType == IF_TYPE_IEEE80211 ||
+                           friendly.find(L"Wi-Fi") != std::wstring::npos ||
+                           friendly.find(L"WiFi") != std::wstring::npos ||
+                           friendly.find(L"Wireless") != std::wstring::npos);
+            bool isEthernet = (pCurr->IfType == IF_TYPE_ETHERNET_CSMACD && !isVirtual);
+
             for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurr->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
                 sockaddr_in* sa_in = (sockaddr_in*)pUnicast->Address.lpSockaddr;
                 char ipStr[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &(sa_in->sin_addr), ipStr, INET_ADDRSTRLEN);
                 std::string ip(ipStr);
-                if (ip != "127.0.0.1") ips.push_back(ip);
+
+                // Strictly ignore loopback and APIPA / link-local addresses
+                if (ip == "127.0.0.1" || ip.rfind("169.254.", 0) == 0 || ip.rfind("0.", 0) == 0) continue;
+
+                int prio = 50;
+                if (isWifi && hasGateway) prio = 1; // Real Wi-Fi connected to router
+                else if (isEthernet && hasGateway) prio = 2; // Real Ethernet connected to router
+                else if (ip.rfind("192.168.", 0) == 0 && !isVirtual) prio = 3; // Home/LAN subnet
+                else if (ip.rfind("10.", 0) == 0 && !isVirtual) prio = 4;
+                else if (hasGateway && !isVirtual) prio = 5;
+                else if (isVirtual) prio = 90; // Virtual adapters at the bottom
+
+                ranked.push_back({ip, prio});
             }
         }
     }
     if (pAddresses) free(pAddresses);
+
+    std::sort(ranked.begin(), ranked.end(), [](const RankedIp& a, const RankedIp& b) {
+        return a.priority < b.priority;
+    });
+
+    std::vector<std::string> ips;
+    for (const auto& r : ranked) {
+        if (std::find(ips.begin(), ips.end(), r.ip) == ips.end()) {
+            ips.push_back(r.ip);
+        }
+    }
     return ips;
 }
 
@@ -182,6 +233,8 @@ bool HttpControlBridge::Start(uint16_t port) {
     m_port = port;
     m_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (m_listenSocket == INVALID_SOCKET) return false;
+
+    SetHandleInformation((HANDLE)m_listenSocket, HANDLE_FLAG_INHERIT, 0);
 
     int opt = 1;
     setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
@@ -218,15 +271,6 @@ void HttpControlBridge::Stop() {
         m_listenSocket = INVALID_SOCKET;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(m_audioMutex);
-        for (auto& pair : m_audioClients) {
-            for (SOCKET s : pair.second) {
-                closesocket(s);
-            }
-        }
-        m_audioClients.clear();
-    }
 
     if (m_serverThread.joinable()) {
         m_serverThread.join();
@@ -322,16 +366,6 @@ void HttpControlBridge::RemoveDevice(int deviceId) {
     {
         std::lock_guard<std::mutex> lock(m_frameMutex);
         m_deviceBmpFrames.erase(deviceId);
-    }
-    {
-        std::lock_guard<std::mutex> lock(m_audioMutex);
-        auto it = m_audioClients.find(deviceId);
-        if (it != m_audioClients.end()) {
-            for (SOCKET s : it->second) {
-                closesocket(s);
-            }
-            m_audioClients.erase(it);
-        }
     }
 }
 
@@ -433,24 +467,6 @@ void HttpControlBridge::TriggerRescan() {
     m_receiver.ClearIgnoredClients();
     if (m_rescanCallback) {
         m_rescanCallback();
-    }
-}
-
-void HttpControlBridge::PushAudioData(int deviceId, const uint8_t* pcmData, uint32_t size) {
-    if (!pcmData || size == 0) return;
-    std::lock_guard<std::mutex> lock(m_audioMutex);
-    auto it = m_audioClients.find(deviceId);
-    if (it != m_audioClients.end()) {
-        auto& clients = it->second;
-        for (auto clientIt = clients.begin(); clientIt != clients.end(); ) {
-            int sent = send(*clientIt, (const char*)pcmData, static_cast<int>(size), 0);
-            if (sent <= 0) {
-                closesocket(*clientIt);
-                clientIt = clients.erase(clientIt);
-            } else {
-                ++clientIt;
-            }
-        }
     }
 }
 
@@ -585,31 +601,53 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             "<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;}"
             "#v{width:100%;height:100%;object-fit:contain;display:block;transition:transform 0.15s ease;}</style></head>"
             "<body><img id='v' src='/api/snapshot?cam=" + camParamStr + "' alt='Stream'>"
-            "<audio id='snd' src='/api/audio?cam=" + camParamStr + "' autoplay playsinline></audio>"
             "<script>"
             "const v = document.getElementById('v');"
-            "const snd = document.getElementById('snd');"
-            "if(snd){"
-            "  snd.volume = 1.0;"
-            "  const playA = () => { snd.play().catch(()=>{}); };"
-            "  playA();"
-            "  window.addEventListener('click', playA);"
-            "  let recAudio = false;"
-            "  const retryAudio = () => {"
-            "    if(recAudio) return;"
-            "    recAudio = true;"
-            "    setTimeout(() => {"
-            "      recAudio = false;"
-            "      try {"
-            "        snd.src = '/api/audio?cam=" + camParamStr + "&t=' + Date.now();"
-            "        snd.load();"
-            "        snd.play().catch(()=>{});"
-            "      }catch(e){}"
-            "    }, 1200);"
-            "  };"
-            "  snd.addEventListener('error', retryAudio);"
-            "  snd.addEventListener('ended', retryAudio);"
+            "let audioCtx = null;"
+            "let nextPlayTime = 0;"
+            "let isAudioActive = false;"
+            "async function audioPollLoop() {"
+            "  if (!isAudioActive) return;"
+            "  try {"
+            "    const res = await fetch('/api/audio_chunk?cam=" + camParamStr + "');"
+            "    if (res.ok && res.status === 200) {"
+            "      const arrayBuf = await res.arrayBuffer();"
+            "      if (arrayBuf.byteLength >= 2) {"
+            "        if (!audioCtx) {"
+            "          audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });"
+            "        }"
+            "        if (audioCtx.state === 'suspended') {"
+            "          await audioCtx.resume();"
+            "        }"
+            "        const sampleCount = Math.floor(arrayBuf.byteLength / 2);"
+            "        const pcm16 = new Int16Array(arrayBuf, 0, sampleCount);"
+            "        const audioBuf = audioCtx.createBuffer(1, sampleCount, 48000);"
+            "        const chan = audioBuf.getChannelData(0);"
+            "        for (let i = 0; i < sampleCount; i++) {"
+            "          chan[i] = pcm16[i] / 32768.0;"
+            "        }"
+            "        const srcNode = audioCtx.createBufferSource();"
+            "        srcNode.buffer = audioBuf;"
+            "        srcNode.connect(audioCtx.destination);"
+            "        const now = audioCtx.currentTime;"
+            "        if (nextPlayTime < now) {"
+            "          nextPlayTime = now + 0.02;"
+            "        }"
+            "        srcNode.start(nextPlayTime);"
+            "        nextPlayTime += audioBuf.duration;"
+            "      }"
+            "    }"
+            "  } catch (e) {}"
+            "  setTimeout(audioPollLoop, 40);"
             "}"
+            "function initAudio() {"
+            "  if (isAudioActive) return;"
+            "  isAudioActive = true;"
+            "  audioPollLoop();"
+            "}"
+            "window.addEventListener('load', initAudio);"
+            "window.addEventListener('click', initAudio);"
+            "initAudio();"
             "const params = new URLSearchParams(window.location.search);"
             "let rot = parseInt(params.get('rot') || '0', 10);"
             "let mirror = params.get('mirror') === '1';"
@@ -675,43 +713,6 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         return;
     }
 
-    // 0.1 Audio Live Stream endpoint (/api/audio, /api/audio?cam=X)
-    if (firstLine.find("GET /api/audio") != std::string::npos) {
-        #pragma pack(push, 1)
-        struct WavStreamHeader {
-            char riff[4] = {'R', 'I', 'F', 'F'};
-            uint32_t fileSize = 0x7FFFFFFF;
-            char wave[4] = {'W', 'A', 'V', 'E'};
-            char fmt[4] = {'f', 'm', 't', ' '};
-            uint32_t fmtSize = 16;
-            uint16_t audioFormat = 1; // PCM
-            uint16_t numChannels = 1; // Mono
-            uint32_t sampleRate = 48000;
-            uint32_t byteRate = 48000 * 1 * 2; // 96000
-            uint16_t blockAlign = 2; // 1 * 16/8
-            uint16_t bitsPerSample = 16;
-            char data[4] = {'d', 'a', 't', 'a'};
-            uint32_t dataSize = 0x7FFFFFFF;
-        } wavHeader;
-        #pragma pack(pop)
-
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: audio/wav\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Cache-Control: no-cache, no-store\r\n"
-            << "Connection: close\r\n\r\n";
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        send(clientSock, (const char*)&wavHeader, sizeof(wavHeader), 0);
-
-        {
-            std::lock_guard<std::mutex> lock(m_audioMutex);
-            m_audioClients[requestedCamId].push_back(clientSock);
-        }
-        return;
-    }
-
     // 0.5 Camera Live Transform Sync API (/api/cam_transform)
     if (firstLine.find("/api/cam_transform") != std::string::npos) {
         if (firstLine.find("POST") != std::string::npos) {
@@ -741,6 +742,141 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             << body;
         std::string resp = oss.str();
         send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 0.7 Real-time Audio Level API (/api/audio_level, /api/audio_level?cam=X)
+    if (firstLine.find("GET /api/audio_level") != std::string::npos) {
+        int level = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_statusMutex);
+            if (m_devices.find(requestedCamId) != m_devices.end()) {
+                level = m_devices[requestedCamId].audioLevel;
+            } else {
+                level = m_status.audioLevel;
+            }
+        }
+        std::string body = "{\"level\":" + std::to_string(level) + "}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 0.75 Mic status endpoint — returns mute state, gain, and current peak level
+    if (firstLine.find("GET /api/mic/status") != std::string::npos) {
+        bool muted = false;
+        float gainDb = 0.0f;
+        int level = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_statusMutex);
+            auto it = m_devices.find(requestedCamId);
+            if (it != m_devices.end()) {
+                muted  = it->second.isMicMuted;
+                gainDb = it->second.micGainDb;
+                level  = it->second.audioLevel;
+            }
+        }
+        std::ostringstream body;
+        body << "{\"muted\":" << (muted ? "true" : "false")
+             << ",\"gainDb\":" << gainDb
+             << ",\"level\":" << level << "}";
+        std::string bodyStr = body.str();
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << bodyStr.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "Connection: close\r\n\r\n"
+            << bodyStr;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 0.76 Set mic gain: POST /api/mic/gain?cam=X&db=6.5
+    if (firstLine.find("POST /api/mic/gain") != std::string::npos ||
+        firstLine.find("GET /api/mic/gain") != std::string::npos) {
+        // Parse db param from URL or body
+        float gainDb = 0.0f;
+        auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
+            size_t pos = src.find(key + "=");
+            if (pos == std::string::npos) return "";
+            pos += key.size() + 1;
+            size_t end = src.find_first_of("& \r\n", pos);
+            return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
+        };
+
+        std::string dbStr = parseParam(firstLine, "db");
+        if (dbStr.empty()) dbStr = parseParam(requestStr, "db");
+        if (!dbStr.empty()) {
+            try { gainDb = std::stof(UrlDecode(dbStr)); } catch (...) { gainDb = 0.0f; }
+        }
+
+        // Clamp
+        if (gainDb < -40.0f) gainDb = -40.0f;
+        if (gainDb >  20.0f) gainDb =  20.0f;
+
+        SetMicGain(requestedCamId, gainDb);
+
+        std::string body = "{\"status\":\"ok\",\"gainDb\":" + std::to_string(gainDb) + "}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    if (firstLine.find("GET /api/audio_chunk") != std::string::npos || firstLine.find("GET /api/audio") != std::string::npos) {
+        std::vector<uint8_t> chunk;
+        {
+            std::lock_guard<std::mutex> lock(m_audioMutex);
+            if (m_audioBuffers.find(requestedCamId) != m_audioBuffers.end()) {
+                chunk = std::move(m_audioBuffers[requestedCamId]);
+                m_audioBuffers[requestedCamId].clear();
+            }
+        }
+        bool isMuted = false;
+        {
+            std::lock_guard<std::mutex> lock(m_statusMutex);
+            auto it = m_devices.find(requestedCamId);
+            if (it != m_devices.end()) {
+                isMuted = it->second.isMicMuted;
+            }
+        }
+        if (isMuted && !chunk.empty()) {
+            std::fill(chunk.begin(), chunk.end(), 0);
+        }
+
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/octet-stream\r\n"
+            << "Content-Length: " << chunk.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            << "Connection: close\r\n\r\n";
+        std::string header = oss.str();
+        send(clientSock, header.c_str(), static_cast<int>(header.size()), 0);
+        if (!chunk.empty()) {
+            send(clientSock, reinterpret_cast<const char*>(chunk.data()), static_cast<int>(chunk.size()), 0);
+        }
         closesocket(clientSock);
         return;
     }
@@ -803,7 +939,24 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                  << "\"fps\":" << m_status.fps << ","
                  << "\"latencyMs\":" << m_status.latencyMs << ","
                  << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
-                 << "\"localIps\":[";
+                 << "\"audioLevel\":" << m_status.audioLevel;
+
+            if (m_pAudioOutput) {
+                json << ",\"audio\":{"
+                     << "\"device\":\"" << m_pAudioOutput->GetDeviceName() << "\","
+                     << "\"isCable\":" << (m_pAudioOutput->IsCableActive() ? "true" : "false") << ","
+                     << "\"level\":" << m_pAudioOutput->GetCurrentLevel() << ","
+                     << "\"muted\":" << (m_pAudioOutput->IsMuted() ? "true" : "false") << ","
+                     << "\"volume\":" << m_pAudioOutput->GetVolume()
+                     << "}";
+            }
+
+            auto latestIps = GetLocalIPv4Addresses();
+            if (!latestIps.empty()) {
+                m_status.localIps = latestIps;
+            }
+
+            json << ",\"localIps\":[";
             for (size_t i = 0; i < m_status.localIps.size(); ++i) {
                 json << "\"" << m_status.localIps[i] << "\"";
                 if (i + 1 < m_status.localIps.size()) json << ",";
@@ -855,12 +1008,104 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                      << "\"fps\":" << d.fps << ","
                      << "\"latencyMs\":" << d.latencyMs << ","
                      << "\"bitrateKbps\":" << d.bitrateKbps << ","
+                     << "\"audioLevel\":" << d.audioLevel << ","
                      << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
                      << "}";
                 if (++idx < allDevs.size()) json << ",";
             }
             json << "]}";
         }
+
+        std::string body = json.str();
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+
+        // Decay audio level smoothly after reporting
+        {
+            std::lock_guard<std::mutex> lock(m_statusMutex);
+            m_status.audioLevel = static_cast<int>(m_status.audioLevel * 0.7f);
+            for (auto& p : m_devices) {
+                p.second.audioLevel = static_cast<int>(p.second.audioLevel * 0.7f);
+            }
+        }
+        return;
+    }
+
+    // 2.2 Instant Audio Level API (/api/audio_level, /api/audio_level?cam=X)
+    if (firstLine.find("GET /api/audio_level") != std::string::npos) {
+        int lvl = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_statusMutex);
+            if (m_devices.find(requestedCamId) != m_devices.end()) {
+                lvl = m_devices[requestedCamId].audioLevel;
+                m_devices[requestedCamId].audioLevel = static_cast<int>(lvl * 0.65f);
+            } else {
+                lvl = m_status.audioLevel;
+                m_status.audioLevel = static_cast<int>(lvl * 0.65f);
+            }
+        }
+        std::string body = "{\"level\":" + std::to_string(lvl) + "}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 2.5 Audio Configuration API (/api/audio_config)
+    if (firstLine.find("/api/audio_config") != std::string::npos) {
+        if (!m_pAudioOutput) {
+            std::string errResp = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n";
+            send(clientSock, errResp.c_str(), static_cast<int>(errResp.size()), 0);
+            closesocket(clientSock);
+            return;
+        }
+
+        if (firstLine.find("POST") != std::string::npos) {
+            size_t devPos = firstLine.find("dev=");
+            if (devPos != std::string::npos) {
+                int devId = std::atoi(firstLine.c_str() + devPos + 4);
+                m_pAudioOutput->SelectDevice(devId);
+            }
+            size_t volPos = firstLine.find("vol=");
+            if (volPos != std::string::npos) {
+                float vol = static_cast<float>(std::atof(firstLine.c_str() + volPos + 4));
+                m_pAudioOutput->SetVolume(vol);
+            }
+            size_t mutePos = firstLine.find("mute=");
+            if (mutePos != std::string::npos) {
+                bool mute = (firstLine.substr(mutePos + 5, 1) == "1");
+                m_pAudioOutput->SetMuted(mute);
+            }
+        }
+
+        auto devList = AudioOutputManager::EnumerateOutputDevices();
+        std::ostringstream json;
+        json << "{\"currentDevice\":\"" << m_pAudioOutput->GetDeviceName() << "\""
+             << ",\"isCable\":" << (m_pAudioOutput->IsCableActive() ? "true" : "false")
+             << ",\"level\":" << m_pAudioOutput->GetCurrentLevel()
+             << ",\"muted\":" << (m_pAudioOutput->IsMuted() ? "true" : "false")
+             << ",\"volume\":" << m_pAudioOutput->GetVolume()
+             << ",\"devices\":[";
+        for (size_t i = 0; i < devList.size(); ++i) {
+            json << "{\"id\":" << devList[i].first << ",\"name\":\"" << devList[i].second << "\"}";
+            if (i + 1 < devList.size()) json << ",";
+        }
+        json << "]}";
 
         std::string body = json.str();
         std::ostringstream oss;
@@ -1078,7 +1323,25 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             if (!lp.empty()) longParam = std::stoll(lp);
             if (!fp.empty()) floatParam = std::stof(fp);
             if (!dev.empty()) targetDevId = std::stoi(dev);
-            else targetDevId = m_activeDeviceId.load();
+            if (action == 11 && longParam == 0) {
+                // When toggling connection mode, pack PC's primary Wi-Fi IPv4 address
+                std::string bestWifiIp = "";
+                {
+                    std::lock_guard<std::mutex> lock(m_statusMutex);
+                    for (const auto& ip : m_status.localIps) {
+                        if (ip != "127.0.0.1" && ip.find("169.254.") != 0) {
+                            bestWifiIp = ip;
+                            break;
+                        }
+                    }
+                }
+                if (!bestWifiIp.empty()) {
+                    in_addr addr{};
+                    inet_pton(AF_INET, bestWifiIp.c_str(), &addr);
+                    longParam = static_cast<int64_t>(static_cast<uint32_t>(addr.s_addr));
+                }
+                floatParam = (intParam != 0) ? 1.0f : 0.0f;
+            }
 
             BouleCamCameraCmd cmd{};
             cmd.magic = BOULECAM_MAGIC;
@@ -1091,6 +1354,18 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             bool ok = m_receiver.SendCameraCommand(cmd, targetDevId);
             if (!ok) {
                 ok = m_receiver.SendCameraCommand(cmd, 0); // fallback to all connected clients
+            }
+            if (ok && action == 8) {
+                bool nowMuted = false;
+                {
+                    std::lock_guard<std::mutex> lock(m_statusMutex);
+                    if (m_devices.find(targetDevId) != m_devices.end()) {
+                        m_devices[targetDevId].isMicMuted = (intParam == 0);
+                        nowMuted = m_devices[targetDevId].isMicMuted;
+                    }
+                }
+                // Also mute/unmute the SHM audio flag for the virtual-camera DLL
+                SetMicMute(targetDevId, nowMuted);
             }
             if (ok && action == 10) {
                 SetDeviceDimState(targetDevId, intParam != 0);
@@ -1115,6 +1390,74 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
     std::string notFound = "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     send(clientSock, notFound.c_str(), static_cast<int>(notFound.size()), 0);
     closesocket(clientSock);
+}
+
+void HttpControlBridge::PushAudioData(int deviceId, const uint8_t* pcmData, uint32_t size) {
+    if (!pcmData || size == 0) return;
+
+    // Detect hardware mic activity level (0-100%) from raw 16-bit PCM
+    int sampleCount = static_cast<int>(size / 2);
+    const int16_t* samples = reinterpret_cast<const int16_t*>(pcmData);
+    int maxPeak = 0;
+    for (int i = 0; i < sampleCount; i++) {
+        int v = std::abs(static_cast<int>(samples[i]));
+        if (v > maxPeak) maxPeak = v;
+    }
+    int level = (maxPeak * 100) / 32768;
+    if (level > 100) level = 100;
+
+    {
+        std::lock_guard<std::mutex> lock(m_audioMutex);
+        auto& buf = m_audioBuffers[deviceId];
+        buf.insert(buf.end(), pcmData, pcmData + size);
+        if (buf.size() > 96000) {
+            buf.erase(buf.begin(), buf.begin() + (buf.size() - 96000));
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        bool isMuted = false;
+        if (m_devices.find(deviceId) != m_devices.end()) {
+            isMuted = m_devices[deviceId].isMicMuted;
+            m_devices[deviceId].audioLevel = isMuted ? 0 : level;
+        }
+        if (deviceId == m_activeDeviceId.load() || m_status.audioLevel == 0) {
+            m_status.audioLevel = isMuted ? 0 : level;
+        }
+    }
+}
+
+void HttpControlBridge::SetMicMute(int deviceId, bool muted) {
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        if (m_devices.find(deviceId) != m_devices.end()) {
+            m_devices[deviceId].isMicMuted = muted;
+            if (muted) m_devices[deviceId].audioLevel = 0;
+        }
+        if (deviceId == m_activeDeviceId.load() && muted) {
+            m_status.audioLevel = 0;
+        }
+    }
+    // Propagate to SHM so virtual-camera DLL applies silence immediately
+    if (m_micMuteCallback) {
+        m_micMuteCallback(deviceId, muted);
+    }
+    if (m_pAudioOutput) {
+        m_pAudioOutput->SetMuted(muted);
+    }
+}
+
+void HttpControlBridge::SetMicGain(int deviceId, float gainDb) {
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        if (m_devices.find(deviceId) != m_devices.end()) {
+            m_devices[deviceId].micGainDb = gainDb;
+        }
+    }
+    // Propagate to SHM so virtual-camera DLL applies gain in real-time
+    if (m_micGainCallback) {
+        m_micGainCallback(deviceId, gainDb);
+    }
 }
 
 } // namespace boulecam

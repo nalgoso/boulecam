@@ -26,16 +26,34 @@ echo.
 
 :: 3. Compilar el motor C++ (Release) para asegurar que el binario integrado este actualizado
 echo [2/3] Verificando y compilando el motor C++ (Release)...
-if not exist "build" (
-    mkdir build
-    cmake -B build -S desktop-service
-)
-cmake --build build --config Release
-if errorlevel 1 (
-    echo.
-    echo [ERROR] Fallo la compilacion del motor C++ en build\Release.
-    pause
-    exit /b 1
+
+set "MINGW_BIN=C:\Users\pablo\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260616-ucrt-x86_64\bin"
+if exist "%MINGW_BIN%\clang++.exe" (
+    set "PATH=%MINGW_BIN%;%PATH%"
+    if not exist "build-mingw" (
+        cmake -B build-mingw -S . -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+    )
+    cmake --build build-mingw
+    if errorlevel 1 (
+        echo [ERROR] Fallo la compilacion con MinGW.
+        pause
+        exit /b 1
+    )
+    if not exist "build\Release" mkdir "build\Release"
+    copy /y "build-mingw\Release\boulecam-desktop.exe" "build\Release\boulecam-desktop.exe" >nul
+    copy /y "build-mingw\Release\boulecam-vcam.dll" "build\Release\boulecam-vcam.dll" >nul
+    copy /y "build-mingw\Release\register_vcam.exe" "build\Release\register_vcam.exe" >nul
+) else (
+    if not exist "build" (
+        mkdir build
+        cmake -B build -G "Visual Studio 17 2022" -A x64
+    )
+    cmake --build build --config Release
+    if errorlevel 1 (
+        echo [ERROR] Fallo la compilacion del motor C++ en build\Release.
+        pause
+        exit /b 1
+    )
 )
 echo [OK] Motor C++ compilado en build\Release\boulecam-desktop.exe.
 echo.
@@ -58,13 +76,16 @@ if errorlevel 1 (
 )
 cd ..
 
-:: 5. Comprobar resultado
+:: 5. Comprobar resultado y copiar a la raiz
 set "OUTPUT_EXE=desktop-app\dist\BouleCam-v%APP_VERSION%.exe"
 if exist "%OUTPUT_EXE%" (
+    copy /y "%OUTPUT_EXE%" "BouleCam-v%APP_VERSION%.exe" >nul
+    if exist "BouleCam.exe" del /f /q "BouleCam.exe" >nul 2>&1
+    if exist "desktop-app\dist\BouleCam.exe" del /f /q "desktop-app\dist\BouleCam.exe" >nul 2>&1
     echo.
     echo ==========================================================
     echo [EXITO] Ejecutable standalone generado correctamente:
-    echo        %CD%\%OUTPUT_EXE%
+    echo        %CD%\BouleCam-v%APP_VERSION%.exe
     echo ==========================================================
 ) else (
     echo.

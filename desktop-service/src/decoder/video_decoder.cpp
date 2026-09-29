@@ -242,16 +242,54 @@ bool VideoDecoder::DecodeNALU(const uint8_t* pData, uint32_t size, uint64_t capt
                 pDecodedBuffer->Lock(&pDecodedBytes, NULL, &currentLength);
 
                 if (pDecodedBytes && currentLength > 0 && m_callback) {
-                    m_callback(
-                        pDecodedBytes,
-                        currentLength,
-                        m_width,
-                        m_height,
-                        m_width,
-                        BOULECAM_PIXFMT_NV12,
-                        captureTimestampUs,
-                        GetCurrentTimeMicroseconds()
-                    );
+                    uint32_t exactSize = m_width * m_height * 3 / 2;
+                    if (currentLength > exactSize && m_height == 1080 && m_width == 1920) {
+                        uint32_t sliceHeight = (currentLength * 2) / (m_width * 3);
+                        if (sliceHeight > m_height) {
+                            if (m_compactBuffer.size() < exactSize) {
+                                m_compactBuffer.resize(exactSize);
+                            }
+                            // 1. Copy exact 1080 rows of Y plane
+                            memcpy(m_compactBuffer.data(), pDecodedBytes, m_width * m_height);
+                            // 2. Copy exact 540 rows of UV chroma (starts at offset m_width * sliceHeight)
+                            memcpy(m_compactBuffer.data() + (m_width * m_height),
+                                   pDecodedBytes + (m_width * sliceHeight),
+                                   m_width * (m_height / 2));
+
+                            m_callback(
+                                m_compactBuffer.data(),
+                                exactSize,
+                                m_width,
+                                m_height,
+                                m_width,
+                                BOULECAM_PIXFMT_NV12,
+                                captureTimestampUs,
+                                GetCurrentTimeMicroseconds()
+                            );
+                        } else {
+                            m_callback(
+                                pDecodedBytes,
+                                currentLength,
+                                m_width,
+                                m_height,
+                                m_width,
+                                BOULECAM_PIXFMT_NV12,
+                                captureTimestampUs,
+                                GetCurrentTimeMicroseconds()
+                            );
+                        }
+                    } else {
+                        m_callback(
+                            pDecodedBytes,
+                            currentLength,
+                            m_width,
+                            m_height,
+                            m_width,
+                            BOULECAM_PIXFMT_NV12,
+                            captureTimestampUs,
+                            GetCurrentTimeMicroseconds()
+                        );
+                    }
                 }
 
                 pDecodedBuffer->Unlock();

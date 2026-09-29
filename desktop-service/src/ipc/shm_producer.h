@@ -13,8 +13,12 @@ public:
     ShmProducer();
     ~ShmProducer();
 
-    bool Initialize(const std::wstring& shmName = L"Local\\BouleCam_SharedMemory_v1",
-                    const std::wstring& eventName = L"Local\\BouleCam_Event_NewFrame_v1");
+    // Initialize for a specific camera slot (1..3). Builds the named SHM/event strings automatically.
+    bool Initialize(int camIndex = 1);
+
+    // Legacy overload with explicit names
+    bool Initialize(const std::wstring& shmName, const std::wstring& eventName);
+
     void Shutdown();
 
     // Writes a new decoded frame to the next available ring buffer slot (Triple-Buffering)
@@ -27,8 +31,17 @@ public:
                     uint64_t captureTimestampUs,
                     uint64_t decodedTimestampUs);
 
+    bool WriteAudio(const uint8_t* pPcmData,
+                    uint32_t dataSize,
+                    uint32_t sampleRate = 48000,
+                    uint32_t channels = 1);
+
     void SetStreamingActive(bool active);
     void UpdateFormat(uint32_t width, uint32_t height, uint32_t fps);
+
+    // Audio control — written into SHM and consumed by the virtual-camera DLL in real-time
+    void SetAudioMuted(bool muted);
+    void SetAudioGainDb(float gainDb); // e.g. 0.0 = unity, +6.0 = double, -12.0 = quarter
 
     bool IsInitialized() const { return m_pIpcHeader != nullptr; }
 

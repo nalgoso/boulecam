@@ -43,6 +43,8 @@ bool TcpReceiver::Start(uint16_t port, FrameReceivedCallback frameCb, HandshakeR
         return false;
     }
 
+    SetHandleInformation((HANDLE)m_listenSocket, HANDLE_FLAG_INHERIT, 0);
+
     // Enable SO_REUSEADDR
     int opt = 1;
     setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
@@ -478,11 +480,24 @@ void TcpReceiver::ListenThreadWorker() {
         int rcvBufSize = 2 * 1024 * 1024;
         setsockopt(clientSocket, SOL_SOCKET, SO_RCVBUF, (const char*)&rcvBufSize, sizeof(rcvBufSize));
 
-        // Socket timeouts to prevent hanging threads or freeze
-        DWORD rcvTimeout = 4000;
+        // Socket timeouts to prevent permanently hanging threads
+        // 15s receive timeout: long enough to survive brief encoder suspend periods,
+        // short enough to detect genuine dead connections within a reasonable window.
+        DWORD rcvTimeout = 15000;
         setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&rcvTimeout, sizeof(rcvTimeout));
-        DWORD sndTimeout = 2000;
+        DWORD sndTimeout = 4000;
         setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sndTimeout, sizeof(sndTimeout));
+
+        // Enable TCP Keepalive so genuine network drops are detected without needing
+        // the full 15s receive timeout (helps with Wi-Fi roaming and sleep/wake cycles)
+        int keepAlive = 1;
+        setsockopt(clientSocket, SOL_SOCKET, SO_KEEPALIVE, (const char*)&keepAlive, sizeof(keepAlive));
+        struct tcp_keepalive kaParams{};
+        kaParams.onoff = 1;
+        kaParams.keepalivetime = 5000;   // Start probing after 5s of silence
+        kaParams.keepaliveinterval = 2000; // Retry probe every 2s
+        DWORD bytesReturned = 0;
+        WSAIoctl(clientSocket, SIO_KEEPALIVE_VALS, &kaParams, sizeof(kaParams), NULL, 0, &bytesReturned, NULL, NULL);
 
         // Spawn independent worker thread per connection
         std::thread(&TcpReceiver::ClientThreadWorker, this, clientSocket, std::string(clientIp), clientPort).detach();
@@ -712,11 +727,7 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 }
             }
 
-            if (m_handshakeCallback) {
-                m_handshakeCallback(assignedId, req);
-            }
-
-            // Step 3: Send back Handshake Response
+            // Step 3: Send back Handshake Response FIRST so client can complete handshake
             BouleCamHandshakeResp resp{};
             resp.magic = BOULECAM_MAGIC;
             resp.packet_type = BOULECAM_PKT_HANDSHAKE_RESP;
@@ -725,6 +736,11 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
             resp.negotiated_height = req.height;
             resp.negotiated_fps = req.target_fps;
             send(clientSocket, (const char*)&resp, sizeof(resp), 0);
+
+            // Step 4: Invoke handshake callback after handshake response is safely transmitted
+            if (m_handshakeCallback) {
+                m_handshakeCallback(assignedId, req);
+            }
         } else if (packetType == BOULECAM_PKT_FRAME_DATA) {
             BouleCamFrameHeader header{};
             if (!ReceiveExact(clientSocket, (uint8_t*)&header + 5, sizeof(header) - 5)) {

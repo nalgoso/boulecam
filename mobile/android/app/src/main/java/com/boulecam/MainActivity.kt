@@ -87,7 +87,7 @@ class MainActivity : AppCompatActivity() {
     private var discoveryManager: AutoDiscoveryManager? = null
 
     private var isMicEnabled = true
-    private var isUsbMode = true
+    private var isUsbMode = false
     private var isUsbCableConnected = false
     private var isDimScreenActive = false
     private var physicalOrientationDegrees = 0
@@ -190,7 +190,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: -1
-            val isPlugged = (plugged == BatteryManager.BATTERY_PLUGGED_USB || plugged == BatteryManager.BATTERY_PLUGGED_AC)
+            val isPlugged = (plugged == BatteryManager.BATTERY_PLUGGED_USB)
             updateUsbState(isPlugged)
         } catch (e: Exception) {
             updateUsbState(false)
@@ -201,9 +201,11 @@ class MainActivity : AppCompatActivity() {
         isUsbCableConnected = connected
         runOnUiThread {
             if (!connected && isUsbMode) {
-                // If in USB mode and cable unplugs, auto fallback to Wi-Fi
-                setConnectionMode(usb = false)
-                Toast.makeText(this@MainActivity, "Cable USB desconectado. Cambiando a Wi-Fi...", Toast.LENGTH_LONG).show()
+                // If in USB mode and cable unplugs, seamlessly fallback to Wi-Fi
+                setConnectionMode(usb = false, showToast = false)
+            } else if (connected && !isUsbMode && sender?.isConnected() != true) {
+                // USB plugged in and not currently streaming on Wi-Fi: auto-connect via USB
+                setConnectionMode(usb = true, showToast = false)
             }
             updateConnectionButtonsUI()
         }
@@ -215,7 +217,7 @@ class MainActivity : AppCompatActivity() {
         val txtThumb = txtThumbMode ?: return
         val txtHint = txtToggleHint ?: return
 
-        toggle.alpha = if (isUsbCableConnected || !isUsbMode) 1.0f else 0.5f
+        toggle.alpha = 1.0f
 
         toggle.post {
             val totalWidth = toggle.width
@@ -239,24 +241,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setConnectionMode(usb: Boolean) {
+    private fun setConnectionMode(usb: Boolean, showToast: Boolean = false) {
         if (usb && !isUsbCableConnected) {
-            Toast.makeText(this, "Conecta el cable USB a la PC para activar este modo", Toast.LENGTH_SHORT).show()
             return
         }
 
         isUsbMode = usb
+        getSharedPreferences("boulecam_prefs", MODE_PRIVATE).edit().putBoolean("pref_usb_mode", isUsbMode).apply()
+
         if (isUsbMode) {
-            discoveryManager?.stop()
             sender?.setHost("127.0.0.1", 8088)
-            Toast.makeText(this, "Modo Cable USB activado", Toast.LENGTH_SHORT).show()
         } else {
             wifiToastShown = false
-            if (!lastWifiHost.isNullOrEmpty()) {
-                sender?.setHost(lastWifiHost!!, lastWifiPort)
+            val host = lastWifiHost ?: getSharedPreferences("boulecam_prefs", MODE_PRIVATE).getString("last_wifi_host", null)
+            if (!host.isNullOrEmpty()) {
+                lastWifiHost = host
+                sender?.setHost(host, lastWifiPort)
             }
-            discoveryManager?.start()
-            Toast.makeText(this, "Modo Wi-Fi activado (buscando PC...)", Toast.LENGTH_SHORT).show()
         }
         updateConnectionButtonsUI()
     }
@@ -399,6 +400,17 @@ class MainActivity : AppCompatActivity() {
         // USB / Wi-Fi Circular Pill Toggle
         layoutModeToggle?.setOnClickListener {
             setConnectionMode(usb = !isUsbMode)
+        }
+        layoutModeToggle?.setOnLongClickListener {
+            showManualIpDialog()
+            true
+        }
+
+        // Tap on Status text to configure Wi-Fi IP if disconnected
+        statusTextView?.setOnClickListener {
+            if (sender?.isConnected() != true) {
+                showManualIpDialog()
+            }
         }
 
         // Dim Screen (Atenuar pantalla) - Dismiss when touching dim overlay
@@ -588,32 +600,96 @@ class MainActivity : AppCompatActivity() {
         return devId
     }
 
+    private fun showManualIpDialog() {
+        val prefs = getSharedPreferences("boulecam_prefs", MODE_PRIVATE)
+        val currentIp = lastWifiHost ?: prefs.getString("last_wifi_host", "") ?: ""
+        val input = EditText(this).apply {
+            hint = "Ej: 192.168.1.15"
+            setText(currentIp)
+            setSelection(text.length)
+            inputType = android.text.InputType.TYPE_CLASS_PHONE
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
+        val container = FrameLayout(this).apply {
+            val padding = (20 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding / 2, padding, 0)
+            addView(input)
+        }
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Conectar PC por Wi-Fi")
+            .setMessage("Introduce la IP que muestra la pantalla de BouleCam en tu PC:")
+            .setView(container)
+            .setPositiveButton("Conectar") { _, _ ->
+                val ip = input.text.toString().trim()
+                if (ip.isNotEmpty()) {
+                    lastWifiHost = ip
+                    prefs.edit()
+                        .putString("last_wifi_host", ip)
+                        .putBoolean("pref_usb_mode", false)
+                        .apply()
+                    setConnectionMode(usb = false, showToast = false)
+                    sender?.setHost(ip, 8088)
+                    Toast.makeText(this, "Conectando a PC en $ip...", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
     private fun setupStreamingPipeline() {
         val devName = getFriendlyDeviceName()
         val devId = getUniqueDeviceId()
 
+        val prefs = getSharedPreferences("boulecam_prefs", MODE_PRIVATE)
+        val savedWifi = prefs.getString("last_wifi_host", null)
+        if (!savedWifi.isNullOrEmpty()) {
+            lastWifiHost = savedWifi
+        }
+
+        val savedUsbPref = prefs.getBoolean("pref_usb_mode", false)
+        isUsbMode = savedUsbPref && isUsbCableConnected
+
+        // Pick initial host: USB if user prefers USB and cable is plugged, else last Wi-Fi IP
+        val initialHost = when {
+            isUsbMode -> "127.0.0.1"
+            !lastWifiHost.isNullOrEmpty() -> lastWifiHost!!
+            else -> "127.0.0.1"
+        }
+
         // 1. Initialize Network Streamer with Bidirectional Command Handler
         sender = StreamSender(
-            host = "127.0.0.1", 
+            host = initialHost,
             port = 8088,
             deviceName = devName,
             deviceId = devId,
             onConnectionStateChanged = { connected ->
                 runOnUiThread {
                     if (connected) {
+                        val connectedHost = sender?.getHost() ?: ""
+                        if (connectedHost == "127.0.0.1") {
+                            isUsbMode = true
+                            updateConnectionButtonsUI()
+                        } else if (!connectedHost.startsWith("127.")) {
+                            isUsbMode = false
+                            lastWifiHost = connectedHost
+                            updateConnectionButtonsUI()
+                        }
                         val modeLabel = if (isUsbMode) "Cable USB" else "WiFi"
-                        statusTextView?.text = "STATUS: EN VIVO - $modeLabel"
+                        statusTextView?.text = "STATUS: EN VIVO \u2022 $modeLabel"
                         statusTextView?.setTextColor(COLOR_LIGHT_GREEN)
+                        fpsTextView?.text = "Conectado \u2022 Iniciando..."
+                        fpsTextView?.visibility = View.VISIBLE
                         // START / RESUME RECORDING ONLY WHEN CONNECTED TO PC
                         encoder?.setSuspended(false)
                         encoder?.requestKeyFrame()
-                        if (isMicEnabled) {
-                            audioPipeline?.start()
-                        }
+                        audioPipeline?.start()
                     } else {
                         val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi"
                         statusTextView?.text = "STATUS: BUSCANDO PC ($searchingLabel)..."
                         statusTextView?.setTextColor(COLOR_GRAY)
+                        fpsTextView?.text = "-- FPS \u2022 0.0 Mbps"
                         // PAUSE HARDWARE ENCODER AND AUDIO TO SAVE BATTERY AND PREVENT OVERHEATING!
                         encoder?.setSuspended(true)
                         audioPipeline?.stop()
@@ -624,30 +700,44 @@ class MainActivity : AppCompatActivity() {
                 handleRemoteCommand(cmd)
             }
         )
+        sender?.onConnectionFailed = { failedHost, failures ->
+            runOnUiThread {
+                if (failures >= 2 && sender?.isConnected() == false) {
+                    if (failedHost != "127.0.0.1" && isUsbCableConnected) {
+                        // Wi-Fi unreachable or failing, but USB cable is plugged: auto fallback to USB!
+                        setConnectionMode(usb = true, showToast = false)
+                    } else if (failedHost == "127.0.0.1" && !lastWifiHost.isNullOrEmpty()) {
+                        // USB disconnected / failing: auto fallback to Wi-Fi!
+                        setConnectionMode(usb = false, showToast = false)
+                    }
+                }
+            }
+        }
+        sender?.onStatsUpdated = { fps, bitrateKbps ->
+            runOnUiThread {
+                // Only update status to EN VIVO if we're actually still connected
+                if (sender?.isConnected() == true) {
+                    val mbps = String.format(java.util.Locale.US, "%.1f", bitrateKbps / 1000.0)
+                    fpsTextView?.text = "$fps FPS \u2022 $mbps Mbps"
+                    val modeLabel = if (isUsbMode) "Cable USB" else "WiFi"
+                    statusTextView?.text = "STATUS: EN VIVO \u2022 $modeLabel"
+                    statusTextView?.setTextColor(COLOR_LIGHT_GREEN)
+                }
+            }
+        }
         sender?.start()
 
-        // 2. Start Auto-Discovery Manager for Wi-Fi & USB Auto-Detect
+
         discoveryManager = AutoDiscoveryManager(this) { device ->
             runOnUiThread {
-                if (device.isUsb) {
-                    isUsbCableConnected = true
-                    updateConnectionButtonsUI()
-                    if (isUsbMode) {
-                        sender?.setHost("127.0.0.1", 8088)
-                    }
-                } else {
-                    // Wi-Fi PC detected
-                    lastWifiHost = device.ip
-                    lastWifiPort = device.port
-                    if (!isUsbMode) {
-                        if (sender?.getHost() != device.ip || sender?.getPort() != device.port) {
-                            sender?.setHost(device.ip, device.port)
-                        }
-                        if (!wifiToastShown) {
-                            wifiToastShown = true
-                            Toast.makeText(this, "PC BouleCam encontrada por WiFi (${device.ip})", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                lastWifiHost = device.ip
+                lastWifiPort = device.port
+                getSharedPreferences("boulecam_prefs", MODE_PRIVATE).edit().putString("last_wifi_host", device.ip).apply()
+
+                val alreadyConnectedToThisHost = sender?.isConnected() == true &&
+                    sender?.getHost() == device.ip && sender?.getPort() == device.port
+                if (!isUsbMode && !alreadyConnectedToThisHost) {
+                    sender?.setHost(device.ip, device.port)
                 }
             }
         }
@@ -664,7 +754,7 @@ class MainActivity : AppCompatActivity() {
 
         // 3.5. Prepare Ultra Low Latency PCM Audio Pipeline (Starts only when connected)
         audioPipeline = AudioCapturePipeline(sampleRate = 48000) { pcmData, size ->
-            if (isMicEnabled && sender?.isConnected() == true) {
+            if (sender?.isConnected() == true) {
                 sender?.sendAudio(pcmData, size)
             }
         }
@@ -777,6 +867,18 @@ class MainActivity : AppCompatActivity() {
                 }
                 11 -> { // BOULECAM_ACTION_SET_CONN_MODE (0 = WiFi, 1 = USB)
                     val wantUsb = cmd.intParam1 != 0
+                    if (cmd.longParam1 != 0L) {
+                        val rawIp = cmd.longParam1.toInt()
+                        val b1 = (rawIp and 0xFF)
+                        val b2 = (rawIp shr 8 and 0xFF)
+                        val b3 = (rawIp shr 16 and 0xFF)
+                        val b4 = (rawIp shr 24 and 0xFF)
+                        val wifiIp = "$b1.$b2.$b3.$b4"
+                        if (wifiIp != "0.0.0.0" && !wifiIp.startsWith("169.254")) {
+                            lastWifiHost = wifiIp
+                            getSharedPreferences("boulecam_prefs", MODE_PRIVATE).edit().putString("last_wifi_host", wifiIp).apply()
+                        }
+                    }
                     setConnectionMode(wantUsb)
                 }
                 12 -> { // BOULECAM_ACTION_SET_MIRROR (0 = Default, 1 = Inverted)

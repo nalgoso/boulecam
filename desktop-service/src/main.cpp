@@ -5,6 +5,7 @@
 #include "usb/adb_manager.h"
 #include "usb/usbmuxd_client.h"
 #include "decoder/video_decoder.h"
+#include "audio/audio_output_manager.h"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -36,12 +37,26 @@ int main(int argc, char* argv[]) {
     std::cout << "    Ultra Low Latency Mobile to Windows Webcam Bridge     " << std::endl;
     std::cout << "==========================================================" << std::endl;
 
-    // 1. Initialize Shared Memory Producer (Zero-Copy Triple-Buffering)
-    ShmProducer shmProducer;
-    if (!shmProducer.Initialize()) {
-        std::cerr << "[Fatal] Could not create Shared Memory IPC. Exiting." << std::endl;
-        return 1;
-    }
+    // 1. Initialize Shared Memory Producers map (Zero-Copy Triple-Buffering per device)
+    std::map<int, std::unique_ptr<ShmProducer>> shmProducers;
+
+    // Helper to get or create a ShmProducer for a specific camera slot (deviceId 1..3)
+    auto getProducer = [&](int deviceId) -> ShmProducer* {
+        auto it = shmProducers.find(deviceId);
+        if (it != shmProducers.end()) return it->second.get();
+
+        // Cap to 3 simultaneous cameras; deviceId is used directly as camIndex
+        int camIndex = (deviceId >= 1 && deviceId <= 3) ? deviceId : 1;
+
+        auto prod = std::make_unique<ShmProducer>();
+        if (!prod->Initialize(camIndex)) {
+            std::cerr << "[Fatal] Could not create Shared Memory IPC for device " << deviceId << "." << std::endl;
+            return nullptr;
+        }
+        ShmProducer* pRaw = prod.get();
+        shmProducers[deviceId] = std::move(prod);
+        return pRaw;
+    };
 
     // 2. Start TCP Low Latency Receiver, HTTP Control Bridge & UDP Auto-Discovery Beacon
     TcpReceiver tcpReceiver;
@@ -49,7 +64,24 @@ int main(int argc, char* argv[]) {
     discoveryBeacon.Start();
 
     HttpControlBridge httpBridge(tcpReceiver);
+    AudioOutputManager audioOutput;
+    audioOutput.Initialize(48000, 1, 16);
+    httpBridge.SetAudioOutputManager(&audioOutput);
     httpBridge.Start(BOULECAM_DEFAULT_WS_PORT); // Port 8090 for Desktop App GUI
+
+    // Wire up mic mute/gain commands to SHM so the virtual-camera DLL applies them in real-time
+    httpBridge.SetMicMuteCallback([&shmProducers](int deviceId, bool muted) {
+        auto it = shmProducers.find(deviceId);
+        if (it != shmProducers.end() && it->second) {
+            it->second->SetAudioMuted(muted);
+        }
+    });
+    httpBridge.SetMicGainCallback([&shmProducers](int deviceId, float gainDb) {
+        auto it = shmProducers.find(deviceId);
+        if (it != shmProducers.end() && it->second) {
+            it->second->SetAudioGainDb(gainDb);
+        }
+    });
 
     // Multi-Device decoders and statistics
     std::recursive_mutex decodersMutex;
@@ -67,12 +99,14 @@ int main(int argc, char* argv[]) {
         std::cout << "[USB] ADB not found in system PATH. Wi-Fi streaming and direct IP enabled." << std::endl;
     }
 
-    httpBridge.SetRescanCallback([&adbManager, &httpBridge]() {
-        std::cout << "[Service] Rescan triggered. Refreshing USB ADB reverse forwarding..." << std::endl;
+    httpBridge.SetRescanCallback([&adbManager, &httpBridge, &discoveryBeacon, &tcpReceiver]() {
+        std::cout << "[Service] Rescan triggered. Refreshing USB ADB reverse forwarding and Wi-Fi discovery..." << std::endl;
         if (AdbManager::IsAdbInstalled()) {
             bool usbOk = AdbManager::ExecuteAdbReverse(BOULECAM_DEFAULT_TCP_PORT, BOULECAM_DEFAULT_TCP_PORT);
             httpBridge.SetUsbStatus(usbOk);
         }
+        tcpReceiver.ClearIgnoredClients();
+        discoveryBeacon.TriggerBroadcast();
     });
 
     // 4. Check Apple usbmuxd service for iOS USB Connections
@@ -88,7 +122,7 @@ int main(int argc, char* argv[]) {
 
     bool serverStarted = tcpReceiver.Start(
         BOULECAM_DEFAULT_TCP_PORT,
-        [&decoders, &deviceRotations, &deviceFrameCounts, &deviceByteCounts, &decodersMutex, &shmProducer, &httpBridge, &deviceLatencies](
+        [&decoders, &deviceRotations, &deviceFrameCounts, &deviceByteCounts, &decodersMutex, &getProducer, &httpBridge, &deviceLatencies](
             int deviceId, const BouleCamFrameHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
             
             uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -105,7 +139,7 @@ int main(int argc, char* argv[]) {
                 if (decoders.find(deviceId) == decoders.end()) {
                     decoders[deviceId] = std::make_unique<VideoDecoder>();
                     decoders[deviceId]->Initialize(1920, 1080, BOULECAM_CODEC_H264,
-                        [deviceId, &shmProducer, &httpBridge, &decodersMutex, &deviceRotations, &deviceLatencies](
+                        [deviceId, &getProducer, &httpBridge, &decodersMutex, &deviceRotations, &deviceLatencies](
                             const uint8_t* pDecodedData, uint32_t dataSize, uint32_t width, uint32_t height,
                             uint32_t stride, BouleCamPixelFormat pixelFormat, uint64_t captureTs, uint64_t decodedTs) {
                             
@@ -125,12 +159,13 @@ int main(int argc, char* argv[]) {
                                 }
                             }
 
-                            // If primary active camera, also write to Shared Memory Virtual Camera
-                            if (deviceId == 1 || httpBridge.GetActiveDeviceId() == deviceId) {
+                            // Write to Shared Memory — all active cameras get their own SHM slot
+                            ShmProducer* prod = getProducer(deviceId);
+                            if (prod) {
                                 bool isVert = (rot == 90 || rot == 270);
-                                uint32_t vWidth = isVert ? height : width;
-                                uint32_t vHeight = isVert ? width : height;
-                                shmProducer.WriteFrame(
+                                uint32_t vWidth  = isVert ? height : width;
+                                uint32_t vHeight = isVert ? width  : height;
+                                prod->WriteFrame(
                                     pDecodedData, dataSize, vWidth, vHeight, stride, pixelFormat, captureTs, decodedTs
                                 );
                             }
@@ -148,7 +183,7 @@ int main(int argc, char* argv[]) {
                 pDecoder->DecodeNALU(payloadData, payloadSize, nowUs);
             }
         },
-        [&shmProducer, &httpBridge, &tcpReceiver](int deviceId, const BouleCamHandshakeReq& handshake) {
+        [&getProducer, &httpBridge, &tcpReceiver](int deviceId, const BouleCamHandshakeReq& handshake) {
             std::string clientIp = tcpReceiver.GetClientIp(deviceId);
             std::string uniqueId = tcpReceiver.GetClientUniqueId(deviceId);
             std::string deviceName = tcpReceiver.GetClientDeviceName(deviceId);
@@ -159,11 +194,35 @@ int main(int argc, char* argv[]) {
                       << " Resolution: " << handshake.width << "x" << handshake.height 
                       << " FPS: " << handshake.target_fps << std::endl;
             
-            if (deviceId == 1 || httpBridge.GetActiveDeviceId() == deviceId) {
-                shmProducer.UpdateFormat(handshake.width, handshake.height, handshake.target_fps);
-                shmProducer.SetStreamingActive(true);
+            ShmProducer* prod = getProducer(deviceId);
+            if (prod) {
+                prod->UpdateFormat(handshake.width, handshake.height, handshake.target_fps);
+                prod->SetStreamingActive(true);
             }
             httpBridge.SetDeviceMetadata(deviceId, deviceName, handshake.width, handshake.height, clientIp, isUsb, uniqueId);
+
+            // Inform mobile client of PC's primary Wi-Fi IPv4 address so it can switch or reconnect seamlessly
+            std::string pcWifiIp = "";
+            {
+                auto status = httpBridge.GetStatus();
+                for (const auto& ip : status.localIps) {
+                    if (ip != "127.0.0.1" && ip.find("169.254.") != 0) {
+                        pcWifiIp = ip;
+                        break;
+                    }
+                }
+            }
+            if (!pcWifiIp.empty()) {
+                BouleCamCameraCmd cmd{};
+                cmd.magic = BOULECAM_MAGIC;
+                cmd.action = BOULECAM_ACTION_SET_CONN_MODE;
+                cmd.int_param1 = isUsb ? 1 : 0;
+                in_addr addr{};
+                inet_pton(AF_INET, pcWifiIp.c_str(), &addr);
+                cmd.long_param1 = static_cast<int64_t>(static_cast<uint32_t>(addr.s_addr));
+                cmd.float_param1 = isUsb ? 1.0f : 0.0f;
+                tcpReceiver.SendCameraCommand(cmd, deviceId);
+            }
         },
         [&httpBridge](int deviceId, const BouleCamCameraState& state) {
             httpBridge.SetDeviceDimState(deviceId, state.dim_screen_active != 0);
@@ -175,20 +234,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    tcpReceiver.SetDisconnectedCallback([&httpBridge](int deviceId) {
+    tcpReceiver.SetDisconnectedCallback([&httpBridge, &shmProducers](int deviceId) {
         std::cout << "[Service] Device " << deviceId << " disconnected -> updating HTTP bridge." << std::endl;
         httpBridge.RemoveDevice(deviceId);
+        auto it = shmProducers.find(deviceId);
+        if (it != shmProducers.end() && it->second) {
+            it->second->SetStreamingActive(false);
+        }
     });
 
-    tcpReceiver.SetAudioCallback([&httpBridge](
+    tcpReceiver.SetAudioCallback([&shmProducers, &httpBridge, &audioOutput](
         int deviceId, const BouleCamAudioHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
+        // Write raw PCM into the per-device SHM; virtual-camera DLL applies mute/gain in real-time
+        auto it = shmProducers.find(deviceId);
+        if (it != shmProducers.end() && it->second) {
+            it->second->WriteAudio(payloadData, payloadSize, header.sample_rate, header.channels);
+        }
+        // Push to native Windows audio output device
+        audioOutput.WriteAudio(payloadData, payloadSize);
+        // Level metering for UI
         httpBridge.PushAudioData(deviceId, payloadData, payloadSize);
     });
 
     std::cout << "\n[Ready] BouleCam Desktop Service running. Waiting for mobile camera feed..." << std::endl;
     std::cout << "[Info] Connect your phone via Wi-Fi or USB Cable." << std::endl;
     std::cout << "[Info] Desktop UI Bridge: http://127.0.0.1:8090" << std::endl;
-    std::cout << "[Info] Dedicated OBS Streams: http://127.0.0.1:8090/obs/1 , /obs/2 ..." << std::endl;
+    std::cout << "[Info] Native Audio Device: " << audioOutput.GetDeviceName() << std::endl;
     std::cout << "[Info] Press Ctrl+C to terminate.\n" << std::endl;
 
     // Main status monitor loop (aggregates per-camera statistics)
@@ -231,7 +302,10 @@ int main(int argc, char* argv[]) {
     discoveryBeacon.Stop();
     httpBridge.Stop();
     tcpReceiver.Stop();
-    shmProducer.Shutdown();
+    audioOutput.Shutdown();
+    for (auto& kv : shmProducers) {
+        if (kv.second) kv.second->Shutdown();
+    }
 
     {
         std::lock_guard<std::recursive_mutex> lock(decodersMutex);

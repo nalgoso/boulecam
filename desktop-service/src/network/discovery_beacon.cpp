@@ -33,6 +33,8 @@ bool DiscoveryBeacon::Start() {
         return false;
     }
 
+    SetHandleInformation((HANDLE)m_udpSocket, HANDLE_FLAG_INHERIT, 0);
+
     // Enable Broadcast
     int broadcastOpt = 1;
     setsockopt(m_udpSocket, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcastOpt, sizeof(broadcastOpt));
@@ -77,27 +79,34 @@ void DiscoveryBeacon::Stop() {
 
 static std::vector<std::string> GetLocalBroadcastAddresses() {
     std::vector<std::string> bcastList;
-    ULONG outBufLen = 15000;
+    ULONG outBufLen = 32000;
     PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
     if (!pAddresses) return bcastList;
 
-    if (GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen) == ERROR_BUFFER_OVERFLOW) {
+    DWORD dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+    if (dwRet == ERROR_BUFFER_OVERFLOW) {
         free(pAddresses);
         pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+        if (pAddresses) {
+            dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+        }
     }
 
-    if (pAddresses && GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen) == NO_ERROR) {
+    if (pAddresses && dwRet == NO_ERROR) {
         for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr; pCurr = pCurr->Next) {
-            if (pCurr->OperStatus != IfOperStatusUp) continue;
+            if (pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
             for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurr->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
                 sockaddr_in* sa_in = (sockaddr_in*)pUnicast->Address.lpSockaddr;
                 char ipStr[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &(sa_in->sin_addr), ipStr, INET_ADDRSTRLEN);
                 std::string ip(ipStr);
-                if (ip != "127.0.0.1") {
+                if (ip != "127.0.0.1" && ip.rfind("169.254.", 0) != 0 && ip.rfind("0.", 0) != 0) {
                     size_t lastDot = ip.rfind('.');
                     if (lastDot != std::string::npos) {
-                        bcastList.push_back(ip.substr(0, lastDot) + ".255");
+                        std::string bcast = ip.substr(0, lastDot) + ".255";
+                        if (std::find(bcastList.begin(), bcastList.end(), bcast) == bcastList.end()) {
+                            bcastList.push_back(bcast);
+                        }
                     }
                 }
             }
@@ -133,6 +142,28 @@ void DiscoveryBeacon::BeaconWorker() {
             }
         }
         std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+}
+
+void DiscoveryBeacon::TriggerBroadcast() {
+    if (m_udpSocket == INVALID_SOCKET) return;
+    std::string beaconMsg = "BOULECAM_BEACON:" + std::to_string(m_tcpPort) + ":" + m_hostname;
+
+    sockaddr_in broadcastAddr{};
+    broadcastAddr.sin_family = AF_INET;
+    broadcastAddr.sin_addr.s_addr = INADDR_BROADCAST;
+    broadcastAddr.sin_port = htons(m_udpPort);
+    sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
+           (sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
+
+    auto subnets = GetLocalBroadcastAddresses();
+    for (const auto& bcastIp : subnets) {
+        sockaddr_in subAddr{};
+        subAddr.sin_family = AF_INET;
+        inet_pton(AF_INET, bcastIp.c_str(), &subAddr.sin_addr);
+        subAddr.sin_port = htons(m_udpPort);
+        sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
+               (sockaddr*)&subAddr, sizeof(subAddr));
     }
 }
 

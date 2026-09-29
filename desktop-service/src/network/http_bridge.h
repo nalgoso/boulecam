@@ -32,6 +32,9 @@ struct DeviceInfo {
     float fps = 0.0f;
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
+    int audioLevel = 0;
+    bool isMicMuted = false;
+    float micGainDb = 0.0f; // Microphone gain in dB (-40..+20)
 };
 
 struct SystemStatus {
@@ -48,6 +51,7 @@ struct SystemStatus {
     float fps = 0.0f;
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
+    int audioLevel = 0;
     std::vector<std::string> localIps;
 };
 
@@ -74,6 +78,13 @@ public:
     void SetRescanCallback(RescanCallback cb) { m_rescanCallback = cb; }
     void TriggerRescan();
 
+    // Callbacks invoked when the UI sends mute/gain commands so main.cpp can
+    // propagate them to the correct ShmProducer instance.
+    using MicMuteCallback = std::function<void(int deviceId, bool muted)>;
+    using MicGainCallback = std::function<void(int deviceId, float gainDb)>;
+    void SetMicMuteCallback(MicMuteCallback cb) { m_micMuteCallback = cb; }
+    void SetMicGainCallback(MicGainCallback cb) { m_micGainCallback = cb; }
+
     void UpdateDecodedFrame(int deviceId, const uint8_t* pDecodedData, uint32_t dataSize, uint32_t width, uint32_t height, BouleCamPixelFormat pixelFormat, uint16_t rotation = 0);
 
     struct DeviceTransform {
@@ -85,9 +96,19 @@ public:
     DeviceTransform GetDeviceTransform(int deviceId);
 
     void PushAudioData(int deviceId, const uint8_t* pcmData, uint32_t size);
+    void SetMicMute(int deviceId, bool muted);
+    void SetMicGain(int deviceId, float gainDb); // -40..+20 dB
+
+    void SetAudioOutputManager(class AudioOutputManager* pMgr) { m_pAudioOutput = pMgr; }
+    class AudioOutputManager* GetAudioOutputManager() const { return m_pAudioOutput; }
 
     int GetActiveDeviceId() const { return m_activeDeviceId.load(); }
     void SetActiveDeviceId(int id) { m_activeDeviceId.store(id); }
+
+    SystemStatus GetStatus() {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        return m_status;
+    }
 
 private:
     void ServerWorker();
@@ -114,7 +135,11 @@ private:
     std::map<int, DeviceTransform> m_deviceTransforms;
 
     std::mutex m_audioMutex;
-    std::map<int, std::vector<SOCKET>> m_audioClients;
+    std::map<int, std::vector<uint8_t>> m_audioBuffers;
+
+    class AudioOutputManager* m_pAudioOutput = nullptr;
+    MicMuteCallback m_micMuteCallback;
+    MicGainCallback m_micGainCallback;
 };
 
 } // namespace boulecam

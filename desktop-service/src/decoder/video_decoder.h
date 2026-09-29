@@ -50,6 +50,7 @@ private:
     DWORD m_outputStreamId;
 
     std::vector<uint8_t> m_fallbackNv12Buffer;
+    std::vector<uint8_t> m_compactBuffer;
     uint32_t m_frameCounter;
 };
 

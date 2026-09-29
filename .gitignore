@@ -1,5 +1,7 @@
 # C++ / Visual Studio Builds
 build/
+build-*/
+
 bin/
 *.obj
 *.pdb

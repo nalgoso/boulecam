@@ -37,9 +37,19 @@ class StreamSender(
 
     fun isConnected(): Boolean = isConnected.get()
 
-    private val sendQueue = java.util.concurrent.ArrayBlockingQueue<ByteArray>(2)
+    // Capacity 4: enough to buffer a couple of frames without stalling while still dropping stale ones
+    private val sendQueue = java.util.concurrent.ArrayBlockingQueue<ByteArray>(4)
     private var workerThread: Thread? = null
     private val streamLock = Any()
+
+    var onStatsUpdated: ((fps: Int, bitrateKbps: Int) -> Unit)? = null
+    var onConnectionFailed: ((failedHost: String, failures: Int) -> Unit)? = null
+    private var framesSentInInterval = 0
+    private var bytesSentInInterval = 0L
+    private var lastStatsTimestamp = 0L
+
+    // Tracks consecutive failed connection attempts for exponential backoff
+    private var consecutiveFailures = 0
 
     fun setHost(newHost: String, newPort: Int = 8088) {
         val cleanHost = newHost.trim().removePrefix("http://").removePrefix("https://").trim('/')
@@ -51,13 +61,22 @@ class StreamSender(
             finalPort = parts[1].toIntOrNull() ?: newPort
         }
 
-        if (host != finalHost || port != finalPort) {
-            Log.i(TAG, "Switching host to $finalHost:$finalPort")
-            host = finalHost
-            port = finalPort
+        val hostChanged = (host != finalHost || port != finalPort)
+        host = finalHost
+        port = finalPort
+
+        if (hostChanged || !isConnected.get()) {
+            Log.i(TAG, "Setting host to $finalHost:$finalPort (reconnecting immediately)")
+            consecutiveFailures = 0
             closeSocket()
             workerThread?.interrupt()
         }
+    }
+
+    fun forceReconnect() {
+        consecutiveFailures = 0
+        closeSocket()
+        workerThread?.interrupt()
     }
 
     fun getHost(): String = host
@@ -103,6 +122,18 @@ class StreamSender(
             sendQueue.poll()
             sendQueue.offer(fullPacket)
         }
+
+        framesSentInInterval++
+        bytesSentInInterval += fullPacket.size
+        val now = System.currentTimeMillis()
+        if (now - lastStatsTimestamp >= 1000) {
+            val fps = framesSentInInterval
+            val kbps = ((bytesSentInInterval * 8) / 1000).toInt()
+            framesSentInInterval = 0
+            bytesSentInInterval = 0L
+            lastStatsTimestamp = now
+            onStatsUpdated?.invoke(fps, kbps)
+        }
     }
 
     fun sendAudio(pcmData: ByteArray, size: Int) {
@@ -130,6 +161,7 @@ class StreamSender(
 
     private fun runNetworkLoop() {
         Log.i(TAG, "Network loop started. Target: $host:$port")
+        consecutiveFailures = 0
         while (isRunning.get()) {
             val targetHost = host
             val targetPort = port
@@ -137,50 +169,83 @@ class StreamSender(
                 val sock = Socket()
                 sock.tcpNoDelay = true
                 sock.sendBufferSize = 2 * 1024 * 1024
-                sock.soTimeout = 4000
-                sock.connect(InetSocketAddress(targetHost, targetPort), 2000)
+                sock.soTimeout = 5000 // 5s read timeout; enough to not false-positive on idle periods
+                sock.connect(InetSocketAddress(targetHost, targetPort), 2500)
 
                 socket = sock
                 outputStream = sock.getOutputStream()
                 inputStream = sock.getInputStream()
 
-                Log.i(TAG, "Socket connected to $targetHost:$targetPort. Performing Handshake...")
+                Log.i(TAG, "Socket connected to $targetHost:$targetPort. Performing handshake...")
 
-                // Perform Handshake
                 if (performHandshake()) {
-                    Log.i(TAG, "Handshake SUCCEEDED! Streaming live frames to $targetHost:$targetPort")
-                    isConnected.set(true)
-                    onConnectionStateChanged(true)
+                    Log.i(TAG, "Handshake OK — streaming to $targetHost:$targetPort")
+                    consecutiveFailures = 0
 
-                    // Start Reader thread for incoming desktop camera control commands
+                    // Only notify connected state once, and only if it actually changed
+                    if (!isConnected.getAndSet(true)) {
+                        onConnectionStateChanged(true)
+                    }
+
+                    // Spawn reader for incoming desktop commands
                     val readerThread = Thread { readIncomingCommands(sock) }.apply {
                         name = "BouleCamCmdReader"
+                        isDaemon = true
                         start()
                     }
 
-                    while (isRunning.get() && isConnected.get() && !sock.isClosed && host == targetHost && port == targetPort) {
-                        val packet = sendQueue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS)
-                        if (packet != null) {
-                            synchronized(streamLock) {
-                                outputStream?.write(packet)
-                                outputStream?.flush()
+                    // Main send loop — exits on host change, stop, or socket failure
+                    try {
+                        while (isRunning.get() && !sock.isClosed && host == targetHost && port == targetPort) {
+                            val packet = sendQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                            if (packet != null) {
+                                synchronized(streamLock) {
+                                    outputStream?.write(packet)
+                                    outputStream?.flush()
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Send loop error: ${e.message}")
                     }
 
-                    try { readerThread.join(200) } catch (ignored: Exception) {}
+                    try { readerThread.join(300) } catch (ignored: Exception) {}
+
+                    // If we exited because host changed (not because of a network error), don't
+                    // report a disconnect — the loop will immediately reconnect to the new host.
+                    val hostChanged = (host != targetHost || port != targetPort)
+                    if (!hostChanged && isRunning.get()) {
+                        // Genuine network drop
+                        if (isConnected.getAndSet(false)) {
+                            Log.i(TAG, "Connection lost to $targetHost:$targetPort")
+                            onConnectionStateChanged(false)
+                        }
+                    }
+                    closeSocket()
                 } else {
                     Log.w(TAG, "Handshake failed on $targetHost:$targetPort")
                     closeSocket()
+                    consecutiveFailures++
+                    onConnectionFailed?.invoke(targetHost, consecutiveFailures)
+                    if (isConnected.getAndSet(false)) {
+                        onConnectionStateChanged(false)
+                    }
                 }
             } catch (e: Exception) {
                 closeSocket()
+                consecutiveFailures++
+                onConnectionFailed?.invoke(targetHost, consecutiveFailures)
                 if (isConnected.getAndSet(false)) {
-                    Log.i(TAG, "Disconnected from $targetHost:$targetPort (${e.message})")
+                    Log.i(TAG, "Could not connect to $targetHost:$targetPort — ${e.message}")
                     onConnectionStateChanged(false)
                 }
-                try { Thread.sleep(1000) } catch (ignored: Exception) {}
             }
+
+            if (!isRunning.get()) break
+
+            // Exponential back-off: 1s, 2s, 3s … capped at 5s
+            val delayMs = (minOf(consecutiveFailures, 5) * 1000L).coerceAtLeast(1000L)
+            try { Thread.sleep(delayMs) } catch (ignored: InterruptedException) {}
         }
     }
 
@@ -250,26 +315,45 @@ class StreamSender(
             out.write(hsBuffer.array())
             out.flush()
 
-            // Read Handshake Response (18 bytes)
-            val respBuf = ByteArray(18)
-            var totalRead = 0
-            while (totalRead < 18) {
-                val r = `in`.read(respBuf, totalRead, 18 - totalRead)
-                if (r < 0) {
-                    Log.w(TAG, "EOF while reading handshake response")
+            // Read Handshake Response (18 bytes) with resilience
+            var attempts = 0
+            while (attempts++ < 5) {
+                val respBuf = ByteArray(18)
+                var totalRead = 0
+                while (totalRead < 18) {
+                    val r = `in`.read(respBuf, totalRead, 18 - totalRead)
+                    if (r < 0) {
+                        Log.w(TAG, "EOF while reading handshake response")
+                        return false
+                    }
+                    totalRead += r
+                }
+
+                val resp = ByteBuffer.wrap(respBuf).order(ByteOrder.LITTLE_ENDIAN)
+                val magic = resp.getInt()
+                val type = resp.get()
+                val status = resp.get()
+
+                if (magic == 0x4243414D && type == 0x02.toByte() && status == 0.toByte()) {
+                    Log.i(TAG, "Handshake successful with desktop server")
+                    return true
+                } else if (magic == 0x4243414D && type == 0x30.toByte()) {
+                    // Interleaved camera command packet (22 bytes total, 18 already read, drain last 4 bytes)
+                    val extra = ByteArray(4)
+                    var extraRead = 0
+                    while (extraRead < 4) {
+                        val r = `in`.read(extra, extraRead, 4 - extraRead)
+                        if (r < 0) break
+                        extraRead += r
+                    }
+                    Log.i(TAG, "Handshake absorbed initial command, awaiting response...")
+                    continue
+                } else {
+                    Log.w(TAG, "Unexpected packet during handshake: magic=0x${Integer.toHexString(magic)}, type=$type, status=$status")
                     return false
                 }
-                totalRead += r
             }
-
-            val resp = ByteBuffer.wrap(respBuf).order(ByteOrder.LITTLE_ENDIAN)
-            val magic = resp.getInt()
-            val type = resp.get()
-            val status = resp.get()
-
-            val success = magic == 0x4243414D && type == 0x02.toByte() && status == 0.toByte()
-            Log.i(TAG, "Handshake response: magic=0x${Integer.toHexString(magic)}, type=$type, status=$status -> success=$success")
-            return success
+            return false
         } catch (e: Exception) {
             Log.e(TAG, "Error in performHandshake: ${e.message}", e)
             return false
@@ -302,11 +386,9 @@ class StreamSender(
     }
 
     private fun closeSocket() {
-        try {
-            outputStream?.close()
-            inputStream?.close()
-            socket?.close()
-        } catch (ignored: Exception) {}
+        try { outputStream?.close() } catch (ignored: Exception) {}
+        try { inputStream?.close() } catch (ignored: Exception) {}
+        try { socket?.close() } catch (ignored: Exception) {}
         socket = null
         outputStream = null
         inputStream = null
