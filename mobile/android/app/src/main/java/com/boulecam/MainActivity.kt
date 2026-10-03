@@ -99,6 +99,45 @@ class MainActivity : AppCompatActivity() {
 
     private var usbReceiver: BroadcastReceiver? = null
 
+    private val telemetryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val telemetryRunnable = object : Runnable {
+        override fun run() {
+            if (sender?.isConnected() == true) {
+                sendCurrentTelemetry()
+            }
+            telemetryHandler.postDelayed(this, 5000)
+        }
+    }
+
+    private fun getBatteryInfo(): Pair<Float, Boolean> {
+        return try {
+            val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val level = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val status = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                              status == BatteryManager.BATTERY_STATUS_FULL)
+            val batteryPct = if (level >= 0 && scale > 0) level / scale.toFloat() else 1.0f
+            Pair(batteryPct, isCharging)
+        } catch (e: Exception) {
+            Pair(1.0f, false)
+        }
+    }
+
+    private fun sendCurrentTelemetry() {
+        val (batteryPct, isCharging) = getBatteryInfo()
+        val lens = cameraPipeline?.getCurrentLensFacing() ?: 0
+        val torch = cameraPipeline?.isTorchActive() ?: false
+        sender?.sendCameraState(
+            isDimmed = isDimScreenActive,
+            batteryLevel = batteryPct,
+            isCharging = isCharging,
+            currentLens = lens,
+            isTorchOn = torch,
+            isMicEnabled = isMicEnabled
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Keep screen awake while streaming
@@ -112,6 +151,7 @@ class MainActivity : AppCompatActivity() {
         setupUsbReceiver()
         checkUsbCableState()
         setupOrientationListener()
+        telemetryHandler.postDelayed(telemetryRunnable, 2000)
 
         if (checkCameraPermission()) {
             setupStreamingPipeline()
@@ -173,8 +213,11 @@ class MainActivity : AppCompatActivity() {
                 if (action == "android.hardware.usb.action.USB_STATE") {
                     val connected = intent.getBooleanExtra("connected", false)
                     updateUsbState(connected)
-                } else if (action == Intent.ACTION_POWER_CONNECTED || action == Intent.ACTION_POWER_DISCONNECTED) {
+                } else if (action == Intent.ACTION_POWER_CONNECTED || action == Intent.ACTION_POWER_DISCONNECTED || action == Intent.ACTION_BATTERY_CHANGED) {
                     checkUsbCableState()
+                    if (sender?.isConnected() == true) {
+                        sendCurrentTelemetry()
+                    }
                 }
             }
         }
@@ -182,6 +225,7 @@ class MainActivity : AppCompatActivity() {
             addAction("android.hardware.usb.action.USB_STATE")
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_BATTERY_CHANGED)
         }
         registerReceiver(usbReceiver, filter)
     }
@@ -381,7 +425,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (notifyPeer) {
-            sender?.sendDimState(dim)
+            sendCurrentTelemetry()
         }
     }
 
@@ -685,6 +729,7 @@ class MainActivity : AppCompatActivity() {
                         encoder?.setSuspended(false)
                         encoder?.requestKeyFrame()
                         audioPipeline?.start()
+                        sendCurrentTelemetry()
                     } else {
                         val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi"
                         statusTextView?.text = "STATUS: BUSCANDO PC ($searchingLabel)..."
@@ -892,6 +937,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        telemetryHandler.removeCallbacks(telemetryRunnable)
         BouleCamStreamService.stop(this)
 
         try {

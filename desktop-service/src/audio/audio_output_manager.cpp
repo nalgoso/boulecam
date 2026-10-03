@@ -49,8 +49,8 @@ bool AudioOutputManager::Initialize(uint32_t sampleRate, uint16_t channels, uint
     m_wfx.cbSize = 0;
 
     // Search for a Virtual Audio Cable device (VB-Audio Virtual Cable or similar)
-    int targetDevice = WAVE_MAPPER;
-    std::string foundName = "Default Windows Playback";
+    int targetDevice = -1;
+    std::string foundName = "Aislado (Sin salida a altavoces)";
     bool isCable = false;
 
     auto devList = EnumerateOutputDevices();
@@ -67,28 +67,34 @@ bool AudioOutputManager::Initialize(uint32_t sampleRate, uint16_t channels, uint
         }
     }
 
-    MMRESULT res = waveOutOpen(&m_hWaveOut, targetDevice, &m_wfx, 0, 0, CALLBACK_NULL);
-    if (res != MMSYSERR_NOERROR && targetDevice != WAVE_MAPPER) {
-        // Fallback to default mapper if preferred device failed
-        targetDevice = WAVE_MAPPER;
-        foundName = "Default Windows Playback";
-        isCable = false;
-        res = waveOutOpen(&m_hWaveOut, targetDevice, &m_wfx, 0, 0, CALLBACK_NULL);
+    if (isCable && targetDevice >= 0) {
+        MMRESULT res = waveOutOpen(&m_hWaveOut, targetDevice, &m_wfx, 0, 0, CALLBACK_NULL);
+        if (res == MMSYSERR_NOERROR) {
+            m_deviceIndex = targetDevice;
+            m_activeDeviceName = foundName;
+            m_isCableDevice = true;
+            m_isInitialized.store(true);
+
+            std::cout << "[AudioOutput] Audio playback engine active: " << m_activeDeviceName
+                      << " (Virtual Audio Cable - Native OBS Input ready!)"
+                      << " [" << sampleRate << " Hz, " << channels << "ch, " << bitsPerSample << "b]" << std::endl;
+            return true;
+        } else {
+            std::cerr << "[AudioOutput] Failed to open Virtual Cable device. Error code: " << res << std::endl;
+        }
     }
 
-    if (res != MMSYSERR_NOERROR) {
-        std::cerr << "[AudioOutput] Failed to open waveOut device. Error code: " << res << std::endl;
-        return false;
-    }
-
-    m_deviceIndex = targetDevice;
-    m_activeDeviceName = foundName;
-    m_isCableDevice = isCable;
+    // DO NOT fallback to WAVE_MAPPER! Fallback to isolated mode (no physical speaker output)
+    // to prevent echo and prevent bleeding into Windows Desktop Audio capture in OBS!
+    m_hWaveOut = nullptr;
+    m_deviceIndex = -1;
+    m_activeDeviceName = "Aislado (DirectShow / VCam SHM activo, sin sangrado a altavoces)";
+    m_isCableDevice = false;
     m_isInitialized.store(true);
 
-    std::cout << "[AudioOutput] Audio playback engine active: " << m_activeDeviceName
-              << (isCable ? " (Virtual Audio Cable - Native OBS Input ready!)" : " (Standard Output)")
-              << " [" << sampleRate << " Hz, " << channels << "ch, " << bitsPerSample << "b]" << std::endl;
+    std::cout << "[AudioOutput] Modo Aislado activo (" << m_activeDeviceName << ").\n"
+              << "[AudioOutput] El audio del microfono NO se reproducira en los altavoces de Windows para evitar eco y mezcla con audio de escritorio.\n"
+              << "[AudioOutput] En OBS, captura el audio como 'BouleCam Audio' (DirectShow) o instala un Cable de Audio Virtual." << std::endl;
 
     return true;
 }

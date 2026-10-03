@@ -226,6 +226,7 @@ int main(int argc, char* argv[]) {
         },
         [&httpBridge](int deviceId, const BouleCamCameraState& state) {
             httpBridge.SetDeviceDimState(deviceId, state.dim_screen_active != 0);
+            httpBridge.SetDeviceBatteryState(deviceId, state.battery_level, state.is_charging != 0);
         }
     );
 

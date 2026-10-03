@@ -360,29 +360,41 @@ class StreamSender(
         }
     }
 
-    fun sendDimState(isDimmed: Boolean) {
+    fun sendCameraState(
+        isDimmed: Boolean,
+        batteryLevel: Float,
+        isCharging: Boolean,
+        currentLens: Int = 0,
+        isTorchOn: Boolean = false,
+        isMicEnabled: Boolean = true
+    ) {
         if (!isConnected.get()) return
         try {
-            val buffer = ByteBuffer.allocate(30).order(ByteOrder.LITTLE_ENDIAN)
+            val buffer = ByteBuffer.allocate(35).order(ByteOrder.LITTLE_ENDIAN)
             buffer.putInt(0x4243414D) // BOULECAM_MAGIC
             buffer.put(0x31.toByte())  // BOULECAM_PKT_CAMERA_STATE
-            buffer.put(0.toByte())     // current_lens
-            buffer.put(0.toByte())     // torch_on
+            buffer.put(currentLens.toByte())
+            buffer.put((if (isTorchOn) 1 else 0).toByte())
             buffer.putInt(0)           // current_iso
             buffer.putLong(0L)         // current_exposure_ns
             buffer.putInt(0)           // current_ev
             buffer.put(0.toByte())     // current_wb
             buffer.putFloat(0.0f)      // current_focus
-            buffer.put(1.toByte())     // mic_enabled
-            buffer.putFloat(1.0f)      // battery_level
-            buffer.put((if (isDimmed) 1 else 0).toByte()) // dim_screen_active
+            buffer.put((if (isMicEnabled) 1 else 0).toByte())
+            buffer.putFloat(batteryLevel.coerceIn(0.0f, 1.0f))
+            buffer.put((if (isDimmed) 1 else 0).toByte())
+            buffer.put((if (isCharging) 1 else 0).toByte())
 
             val packet = buffer.array()
             sendQueue.offer(packet)
-            Log.i(TAG, "Sent Dim Screen state to PC: isDimmed=$isDimmed")
+            Log.i(TAG, "Sent Telemetry state to PC: battery=${(batteryLevel * 100).toInt()}%, charging=$isCharging, dim=$isDimmed")
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending dim state: ${e.message}")
+            Log.e(TAG, "Error sending camera telemetry state: ${e.message}")
         }
+    }
+
+    fun sendDimState(isDimmed: Boolean, batteryLevel: Float = 1.0f, isCharging: Boolean = false) {
+        sendCameraState(isDimmed, batteryLevel, isCharging)
     }
 
     private fun closeSocket() {

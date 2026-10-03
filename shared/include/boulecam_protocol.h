@@ -140,6 +140,7 @@ typedef struct BouleCamCameraState {
     uint8_t  mic_enabled;       // Mic status
     float    battery_level;     // 0.0 - 1.0 (battery percentage)
     uint8_t  dim_screen_active; // 0 = Screen normal, 1 = Screen dimmed
+    uint8_t  is_charging;       // 0 = Not charging, 1 = Charging
 } BouleCamCameraState;
 
 #pragma pack(pop)

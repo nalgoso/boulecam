@@ -347,6 +347,22 @@ void HttpControlBridge::SetDeviceDimState(int deviceId, bool isDimmed) {
     }
 }
 
+void HttpControlBridge::SetDeviceBatteryState(int deviceId, float batteryLevel, bool isCharging) {
+    int pct = static_cast<int>(std::round(batteryLevel * 100.0f));
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    if (m_devices.find(deviceId) != m_devices.end()) {
+        m_devices[deviceId].batteryLevel = pct;
+        m_devices[deviceId].isCharging = isCharging;
+    }
+    if (deviceId == m_activeDeviceId.load() || m_devices.size() <= 1) {
+        m_status.batteryLevel = pct;
+        m_status.isCharging = isCharging;
+    }
+}
+
 void HttpControlBridge::RemoveDevice(int deviceId) {
     {
         std::lock_guard<std::mutex> lock(m_statusMutex);
@@ -936,6 +952,8 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                  << "\"height\":" << m_status.height << ","
                  << "\"isVertical\":" << (m_status.isVertical ? "true" : "false") << ","
                  << "\"isDimmed\":" << (m_status.isDimmed ? "true" : "false") << ","
+                 << "\"batteryLevel\":" << m_status.batteryLevel << ","
+                 << "\"isCharging\":" << (m_status.isCharging ? "true" : "false") << ","
                  << "\"fps\":" << m_status.fps << ","
                  << "\"latencyMs\":" << m_status.latencyMs << ","
                  << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
@@ -1005,6 +1023,8 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                      << "\"height\":" << d.height << ","
                      << "\"isVertical\":" << (d.isVertical ? "true" : "false") << ","
                      << "\"isDimmed\":" << (d.isDimmed ? "true" : "false") << ","
+                     << "\"batteryLevel\":" << d.batteryLevel << ","
+                     << "\"isCharging\":" << (d.isCharging ? "true" : "false") << ","
                      << "\"fps\":" << d.fps << ","
                      << "\"latencyMs\":" << d.latencyMs << ","
                      << "\"bitrateKbps\":" << d.bitrateKbps << ","

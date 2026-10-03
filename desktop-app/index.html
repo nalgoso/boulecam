@@ -78,6 +78,10 @@
           <span class="badge-tag" id="badge-fps">-- FPS</span>
           <span class="badge-tag" id="badge-latency" style="color:var(--accent-green);">-- ms</span>
           <span class="badge-tag" id="badge-bitrate">-- Kbps</span>
+          <span class="badge-tag" id="badge-battery" style="display:none; align-items:center; gap:4px;">
+            <span id="badge-battery-icon">🔋</span>
+            <span id="badge-battery-pct">--%</span>
+          </span>
           <span class="badge-tag" id="badge-device">Esperando...</span>
           <span class="badge-tag" id="badge-mode" style="color:var(--accent-cyan);">USB</span>
         </div>
@@ -288,8 +292,8 @@
                 <div class="tooltip-title">Pasos para conectar en OBS Studio:</div>
                 <ol class="tooltip-steps">
                   <li><b>Video:</b> Agrega <i>Dispositivo de captura de video</i> → Selecciona <b>"BouleCam Virtual Camera"</b>.</li>
-                  <li><b>Audio:</b> Agrega <i>Captura de entrada de audio</i> → Selecciona <b>"BouleCam Audio"</b>.</li>
-                  <li><b>Alternativa Web:</b> O agrega fuente <i>Navegador</i> con el enlace inferior (marcando <i>Controlar audio vía OBS</i>).</li>
+                  <li><b>Audio DirectShow (Aislado sin drivers):</b> En las opciones del video, marca <i>Usar dispositivo de audio personalizado</i> → <b>"BouleCam Audio"</b> (Modo: <i>Capturar solo audio</i>).</li>
+                  <li><b>Audio Nativo (Como fuente independiente):</b> Ejecuta <code>Instalar-Audio-Virtual.bat</code> y en OBS agrega <i>Captura de entrada de audio</i> → <b>"CABLE Output"</b>.</li>
                 </ol>
                 <div class="tooltip-note">💡 Multi-cámara: Cada teléfono conectado alimenta su propia cámara nativa (Cam 1, Cam 2, Cam 3).</div>
               </div>

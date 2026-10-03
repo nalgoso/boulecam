@@ -601,7 +601,7 @@ function renderDeviceTabs(devices, activeId) {
   const currentFingerprint = availableDevices.length === 0
     ? 'empty'
     : availableDevices.map(d => 
-        `${d.id}:${d.id === activeId}:${!!d.isLocked}:${d.connected !== false}:${d.isVertical}:${getDeviceDisplayName(d.id, d)}`
+        `${d.id}:${d.id === activeId}:${!!d.isLocked}:${d.connected !== false}:${d.isVertical}:${d.batteryLevel}:${getDeviceDisplayName(d.id, d)}`
       ).join('|');
 
   if (currentFingerprint === lastRenderedTabsFingerprint && cameraSelectorBar.children.length > 0) {
@@ -627,13 +627,13 @@ function renderDeviceTabs(devices, activeId) {
     const isOffline = d.connected === false;
     const isVert = d.isVertical ? ' (Vertical)' : '';
     const name = getDeviceDisplayName(d.id, d);
-    const offlineSuffix = isOffline ? ' (Desconectado)' : '';
-    const lockBadge = isLocked ? ' 🔒' : '';
+    const bLevel = (d.batteryLevel !== undefined && d.batteryLevel >= 0) ? d.batteryLevel : -1;
+    const bTag = bLevel >= 0 ? ` [${bLevel}%${d.isCharging ? '⚡' : ''}]` : '';
 
     return `
       <div class="cam-tab ${isActive ? 'active' : ''} ${isLocked ? 'locked' : ''} ${isOffline ? 'offline' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal Bloqueada: URL fija a este dispositivo' : 'Señal Dinámica'}">
         <span class="cam-tab-dot"></span>
-        <span class="cam-tab-name">📹 Cam ${d.id}: ${name}${offlineSuffix}${isVert}${lockBadge}</span>
+        <span class="cam-tab-name">📹 Cam ${d.id}: ${name}${bTag}${offlineSuffix}${isVert}${lockBadge}</span>
         <div class="cam-tab-actions">
           <button class="cam-tab-lock-btn ${isLocked ? 'locked' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal bloqueada permanentemente a este dispositivo. Clic para desbloquear' : 'Bloquear permanentemente esta URL a este dispositivo'}">${isLocked ? '🔒' : '🔓'}</button>
           <button class="cam-tab-edit-btn" data-cam-id="${d.id}" title="Configurar y renombrar señal (1, 2, 3...)">✏️</button>
@@ -826,6 +826,41 @@ function updateUIStatus(data) {
 
     if (badgeDevice) badgeDevice.textContent = devName;
 
+    // Real-time Battery Status
+    const badgeBattery = document.getElementById('badge-battery');
+    const badgeBatteryIcon = document.getElementById('badge-battery-icon');
+    const badgeBatteryPct = document.getElementById('badge-battery-pct');
+    const bLevel = (curDev.batteryLevel !== undefined && curDev.batteryLevel >= 0) 
+      ? curDev.batteryLevel 
+      : (data.batteryLevel !== undefined && data.batteryLevel >= 0 ? data.batteryLevel : -1);
+    const isCharging = (curDev.isCharging !== undefined) ? curDev.isCharging : (data.isCharging || false);
+
+    if (badgeBattery) {
+      if (bLevel >= 0) {
+        badgeBattery.style.display = 'inline-flex';
+        if (badgeBatteryPct) badgeBatteryPct.textContent = `${bLevel}%`;
+        if (isCharging) {
+          if (badgeBatteryIcon) badgeBatteryIcon.textContent = '⚡';
+          badgeBattery.style.color = 'var(--accent-cyan)';
+          badgeBattery.title = `Batería: ${bLevel}% (Cargando)`;
+        } else if (bLevel <= 20) {
+          if (badgeBatteryIcon) badgeBatteryIcon.textContent = '🪫';
+          badgeBattery.style.color = '#ef4444'; // Red
+          badgeBattery.title = `Batería baja: ${bLevel}%`;
+        } else if (bLevel <= 45) {
+          if (badgeBatteryIcon) badgeBatteryIcon.textContent = '🔋';
+          badgeBattery.style.color = '#f59e0b'; // Amber
+          badgeBattery.title = `Batería: ${bLevel}%`;
+        } else {
+          if (badgeBatteryIcon) badgeBatteryIcon.textContent = '🔋';
+          badgeBattery.style.color = 'var(--accent-green)'; // Green
+          badgeBattery.title = `Batería: ${bLevel}%`;
+        }
+      } else {
+        badgeBattery.style.display = 'none';
+      }
+    }
+
     // Real Connection Type (Cable USB vs WiFi) with Sliding Circular Toggle
     const isDeviceUsb = (curDev.isUsb === true);
     const mToggle = document.getElementById('settings-mode-toggle') || modeToggle;
@@ -868,6 +903,8 @@ function updateUIStatus(data) {
     if (badgeFps) badgeFps.textContent = '-- FPS';
     if (badgeBitrate) badgeBitrate.textContent = '-- Mbps';
     if (badgeDevice) badgeDevice.textContent = 'Sin conexión';
+    const badgeBattery = document.getElementById('badge-battery');
+    if (badgeBattery) badgeBattery.style.display = 'none';
 
     const lblPcWifiIp = document.getElementById('lbl-pc-wifi-ip');
     if (lblPcWifiIp) {

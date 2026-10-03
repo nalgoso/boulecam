@@ -29,6 +29,8 @@ struct DeviceInfo {
     uint32_t height = 0;
     bool isVertical = false;
     bool isDimmed = false;
+    int batteryLevel = -1; // 0..100%, or -1 if unknown
+    bool isCharging = false;
     float fps = 0.0f;
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
@@ -48,6 +50,8 @@ struct SystemStatus {
     uint32_t height = 0;
     bool isVertical = false;
     bool isDimmed = false;
+    int batteryLevel = -1;
+    bool isCharging = false;
     float fps = 0.0f;
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
@@ -67,6 +71,7 @@ public:
     void SetUsbStatus(bool connected);
     void SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip = "", bool isUsb = false, const std::string& uniqueId = "");
     void SetDeviceDimState(int deviceId, bool isDimmed);
+    void SetDeviceBatteryState(int deviceId, float batteryLevel, bool isCharging);
     void RemoveDevice(int deviceId);
     bool DisconnectDevice(int deviceId);
     bool SwapDevices(int camA, int camB);
