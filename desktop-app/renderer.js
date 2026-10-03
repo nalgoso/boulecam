@@ -35,6 +35,7 @@ let unlinkedCamIds = new Set();
 // WiFi dropout grace: keep showing stream for this many ms after last real connection
 const WIFI_GRACE_MS = 3500; // 3.5 seconds — covers brief WiFi reconnects and TCP retries
 let lastConnectedTimestamp = 0;
+let lastFrameReceivedAt = 0;
 
 function loadCustomNames() {
   try {
@@ -595,7 +596,20 @@ function renderDeviceTabs(devices, activeId) {
   if (!cameraSelectorBar) return;
   lastDevicesList = devices || [];
 
-  const availableDevices = (devices || []).filter(d => !unlinkedCamIds.has(d.id));
+  let availableDevices = (devices || []).filter(d => !unlinkedCamIds.has(d.id));
+
+  const hasRecentFrames = (Date.now() - lastFrameReceivedAt) < 2500;
+  if (availableDevices.length === 0 && hasRecentFrames) {
+    const devName = (statusText && statusText.textContent.startsWith('Conectado: ') && statusText.textContent.length > 11)
+      ? statusText.textContent.substring(11).trim()
+      : (customCamNames[activeId] || `Cam ${activeId}`);
+    availableDevices = [{
+      id: activeId,
+      name: devName,
+      connected: true,
+      isLocked: false
+    }];
+  }
 
   // Fingerprint state of all tabs: skip innerHTML rebuild if identical to stop hover flicker
   const currentFingerprint = availableDevices.length === 0
@@ -629,6 +643,8 @@ function renderDeviceTabs(devices, activeId) {
     const name = getDeviceDisplayName(d.id, d);
     const bLevel = (d.batteryLevel !== undefined && d.batteryLevel >= 0) ? d.batteryLevel : -1;
     const bTag = bLevel >= 0 ? ` [${bLevel}%${d.isCharging ? '⚡' : ''}]` : '';
+    const offlineSuffix = isOffline ? ' (Offline)' : '';
+    const lockBadge = isLocked ? ' 🔒' : '';
 
     return `
       <div class="cam-tab ${isActive ? 'active' : ''} ${isLocked ? 'locked' : ''} ${isOffline ? 'offline' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal Bloqueada: URL fija a este dispositivo' : 'Señal Dinámica'}">
@@ -713,13 +729,23 @@ function renderDeviceTabs(devices, activeId) {
 
 // Polling daemon status every 500ms
 async function pollStatus() {
+  let data = null;
   try {
-    const res = await fetch(`${API_BASE}/api/status`);
+    const res = await fetch(`${API_BASE}/api/status`, { cache: 'no-store' });
     if (res.ok) {
-      const data = await res.json();
-      updateUIStatus(data);
+      data = await res.json();
     }
   } catch (err) {
+    // HTTP service briefly unreachable during restart or high network load
+  }
+
+  if (data) {
+    try {
+      updateUIStatus(data);
+    } catch (uiErr) {
+      console.error('Error executing updateUIStatus:', uiErr);
+    }
+  } else {
     updateUIStatus({
       connected: false,
       fps: 0,
@@ -735,25 +761,50 @@ async function pollStatus() {
 let lastActiveDeviceId = null;
 
 function updateUIStatus(data) {
-  const availableDevices = (data.devices || []).filter(d => !unlinkedCamIds.has(d.id));
-  const hasConnected = availableDevices.some(d => d.connected !== false);
-  const curDev = availableDevices.find(d => d.id === activeCamId) || 
-                 availableDevices.find(d => d.id === data.activeDeviceId) || 
-                 availableDevices[0];
-  const curDevIsOnline = curDev && (curDev.connected !== false);
+  const now = Date.now();
+  const hasRecentFrames = (now - lastFrameReceivedAt) < 2500;
 
-  // Connection state is driven by the actively viewed camera
+  const availableDevices = (data.devices || []).filter(d => !unlinkedCamIds.has(d.id));
+  let curDev = availableDevices.find(d => d.id === activeCamId) || 
+               availableDevices.find(d => d.id === data.activeDeviceId) || 
+               availableDevices[0];
+
+  // If live frames are actively arriving for activeCamId, ensure curDev is treated as online
+  if (hasRecentFrames) {
+    if (!curDev) {
+      const fallbackName = (data.deviceName && data.deviceName !== 'Desconectado' && data.deviceName !== 'BouleCam Service desconectado')
+        ? data.deviceName
+        : (customCamNames[activeCamId] || `Cam ${activeCamId}`);
+      curDev = {
+        id: activeCamId,
+        name: fallbackName,
+        connected: true,
+        isLocked: false,
+        isUsb: (data.activeDeviceIsUsb || data.usbConnected || false),
+        ip: data.activeDeviceIp || ''
+      };
+      if (!availableDevices.some(d => d.id === activeCamId)) {
+        availableDevices.push(curDev);
+      }
+    } else {
+      curDev.connected = true;
+    }
+  }
+
+  const curDevIsOnline = (curDev && curDev.connected !== false) || hasRecentFrames;
+
+  // Connection state is driven by the actively viewed camera or active video frames
   if (curDevIsOnline) {
-    lastConnectedTimestamp = Date.now();
+    lastConnectedTimestamp = now;
     isConnected = true;
-  } else if ((Date.now() - lastConnectedTimestamp) < WIFI_GRACE_MS) {
+  } else if ((now - lastConnectedTimestamp) < WIFI_GRACE_MS) {
     // Still within grace window — keep stream alive visually
     isConnected = true;
   } else {
     isConnected = false;
   }
 
-  if (curDev && !curDevIsOnline && curDev.isLocked && !isConnected) {
+  if (curDev && !curDevIsOnline && curDev.isLocked && !isConnected && !hasRecentFrames) {
     statusDot.classList.remove('connected');
     const devName = getDeviceDisplayName(curDev.id, curDev);
     statusText.textContent = `Cam ${curDev.id} reservada (Esperando a ${devName} 🔒)`;
@@ -892,19 +943,21 @@ function updateUIStatus(data) {
       }
     }
   } else {
-    statusDot.classList.remove('connected');
-    statusText.textContent = 'Esperando conexión...';
-    statusText.style.color = 'var(--accent-orange)';
-    placeholderBox.style.display = 'flex';
-    liveStreamImg.style.display = 'none';
+    if (!hasRecentFrames) {
+      statusDot.classList.remove('connected');
+      statusText.textContent = 'Esperando conexión...';
+      statusText.style.color = 'var(--accent-orange)';
+      placeholderBox.style.display = 'flex';
+      liveStreamImg.style.display = 'none';
 
-    if (badgeResolution) badgeResolution.textContent = '--';
-    if (badgeLatency) badgeLatency.textContent = '-- ms';
-    if (badgeFps) badgeFps.textContent = '-- FPS';
-    if (badgeBitrate) badgeBitrate.textContent = '-- Mbps';
-    if (badgeDevice) badgeDevice.textContent = 'Sin conexión';
-    const badgeBattery = document.getElementById('badge-battery');
-    if (badgeBattery) badgeBattery.style.display = 'none';
+      if (badgeResolution) badgeResolution.textContent = '--';
+      if (badgeLatency) badgeLatency.textContent = '-- ms';
+      if (badgeFps) badgeFps.textContent = '-- FPS';
+      if (badgeBitrate) badgeBitrate.textContent = '-- Mbps';
+      if (badgeDevice) badgeDevice.textContent = 'Sin conexión';
+      const badgeBattery = document.getElementById('badge-battery');
+      if (badgeBattery) badgeBattery.style.display = 'none';
+    }
 
     const lblPcWifiIp = document.getElementById('lbl-pc-wifi-ip');
     if (lblPcWifiIp) {
@@ -979,8 +1032,9 @@ async function fetchNextFrame() {
     return;
   }
 
-  // If marked offline or disconnected, back off slightly and continue polling smoothly
-  if (!isConnected) {
+  // If marked offline or disconnected and no recent frames, back off slightly and continue polling smoothly
+  const hasRecentFrames = (Date.now() - lastFrameReceivedAt) < 2500;
+  if (!isConnected && !hasRecentFrames) {
     setTimeout(() => {
       requestAnimationFrame(fetchNextFrame);
     }, 200);
@@ -998,10 +1052,16 @@ async function fetchNextFrame() {
     if (res.status === 200) {
       const blob = await res.blob();
       if (blob.size > 1000) {
+        lastFrameReceivedAt = Date.now();
+        lastConnectedTimestamp = Date.now();
         const newUrl = URL.createObjectURL(blob);
         liveStreamImg.src = newUrl;
-        liveStreamImg.style.display = 'block';
-        placeholderBox.style.display = 'none';
+        if (liveStreamImg.style.display !== 'block') {
+          liveStreamImg.style.display = 'block';
+        }
+        if (placeholderBox.style.display !== 'none') {
+          placeholderBox.style.display = 'none';
+        }
 
         if (currentBlobUrl) {
           URL.revokeObjectURL(currentBlobUrl);

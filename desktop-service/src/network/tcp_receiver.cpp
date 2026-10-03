@@ -440,6 +440,12 @@ std::vector<ConnectedClient> TcpReceiver::GetConnectedClients() {
     return list;
 }
 
+bool TcpReceiver::IsClientConnected(int deviceId) {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    auto it = m_clients.find(deviceId);
+    return (it != m_clients.end() && it->second.socket != INVALID_SOCKET);
+}
+
 double TcpReceiver::GetClientRttMs(int deviceId) {
     std::lock_guard<std::mutex> lock(m_clientsMutex);
     auto it = m_clients.find(deviceId);

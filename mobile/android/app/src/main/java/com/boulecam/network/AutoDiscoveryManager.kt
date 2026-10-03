@@ -72,6 +72,10 @@ class AutoDiscoveryManager(
     private fun udpDiscoveryLoop() {
         var socket: DatagramSocket? = null
         while (isRunning.get()) {
+            if (isConnectedProvider?.invoke() == true) {
+                try { Thread.sleep(2500) } catch (e: InterruptedException) { break }
+                continue
+            }
             try {
                 if (socket == null || socket.isClosed) {
                     socket = try {
@@ -202,26 +206,16 @@ class AutoDiscoveryManager(
                             try {
                                 if (!foundSignal.get()) {
                                     var discovered = false
-                                    // Step 1: Probe main stream port 8088
+                                    // Probe HTTP bridge port 8090 (does not interfere with the binary streaming server on 8088!)
                                     try {
-                                        val sock = Socket()
-                                        sock.connect(InetSocketAddress(targetIp, 8088), 250)
-                                        sock.close()
+                                        val sockHttp = Socket()
+                                        sockHttp.connect(InetSocketAddress(targetIp, 8090), 200)
+                                        sockHttp.close()
                                         discovered = true
                                     } catch (ignored: Exception) {}
 
-                                    // Step 2: Probe HTTP bridge port 8090 if 8088 timed out
-                                    if (!discovered && !foundSignal.get()) {
-                                        try {
-                                            val sockHttp = Socket()
-                                            sockHttp.connect(InetSocketAddress(targetIp, 8090), 200)
-                                            sockHttp.close()
-                                            discovered = true
-                                        } catch (ignored2: Exception) {}
-                                    }
-
                                     if (discovered && !foundSignal.getAndSet(true)) {
-                                        Log.i(TAG, "Discovered PC via high-speed parallel scan: $targetIp:8088")
+                                        Log.i(TAG, "Discovered PC via high-speed parallel scan on port 8090: $targetIp:8088")
                                         reportWifiDevice(targetIp, 8088, "BouleCam PC ($targetIp)")
                                     }
                                 }

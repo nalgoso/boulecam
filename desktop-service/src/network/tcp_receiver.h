@@ -108,6 +108,7 @@ public:
     std::string GetClientIp(int deviceId);
     std::string GetClientUniqueId(int deviceId);
     std::string GetClientDeviceName(int deviceId);
+    bool IsClientConnected(int deviceId);
 
 private:
     void ListenThreadWorker();

@@ -364,6 +364,10 @@ void HttpControlBridge::SetDeviceBatteryState(int deviceId, float batteryLevel, 
 }
 
 void HttpControlBridge::RemoveDevice(int deviceId) {
+    if (m_receiver.IsClientConnected(deviceId)) {
+        std::cout << "[HttpBridge] Suppressed RemoveDevice(" << deviceId << ") because receiver still holds active socket." << std::endl;
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(m_statusMutex);
         m_devices.erase(deviceId);
@@ -536,12 +540,29 @@ void HttpControlBridge::UpdateDecodedFrame(int deviceId, const uint8_t* pDecoded
             m_devices[deviceId].width = finalWidth;
             m_devices[deviceId].height = finalHeight;
             m_devices[deviceId].isVertical = isVertical;
+            m_devices[deviceId].connected = true;
+        } else {
+            DeviceInfo dev;
+            dev.id = deviceId;
+            dev.name = m_receiver.GetClientDeviceName(deviceId);
+            dev.uniqueId = m_receiver.GetClientUniqueId(deviceId);
+            dev.ip = m_receiver.GetClientIp(deviceId);
+            dev.isUsb = (dev.ip == "127.0.0.1");
+            dev.connected = true;
+            dev.width = finalWidth;
+            dev.height = finalHeight;
+            dev.isVertical = isVertical;
+            dev.isLocked = m_receiver.IsCameraSlotLocked(deviceId);
+            m_devices[deviceId] = dev;
         }
-        if (deviceId == m_activeDeviceId.load() || !m_status.connected) {
+        if (deviceId == m_activeDeviceId.load() || !m_status.connected || m_status.deviceName == "Desconectado") {
             m_status.connected = true;
             m_status.width = finalWidth;
             m_status.height = finalHeight;
             m_status.isVertical = isVertical;
+            if (m_status.deviceName == "Desconectado" || m_status.deviceName.empty()) {
+                m_status.deviceName = m_devices[deviceId].name;
+            }
         }
     }
 
@@ -933,12 +954,85 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         std::ostringstream json;
         {
             std::lock_guard<std::mutex> lock(m_statusMutex);
+            std::map<int, DeviceInfo> allDevs = m_devices;
+
+            // CRITICAL: Synchronize with active connections in TcpReceiver
+            auto connectedClients = m_receiver.GetConnectedClients();
+            for (const auto& client : connectedClients) {
+                if (client.id > 0) {
+                    DeviceInfo& dev = allDevs[client.id];
+                    dev.id = client.id;
+                    if (dev.name.empty() || dev.name == "Desconectado" || dev.name.rfind("Cam ", 0) == 0) {
+                        dev.name = client.deviceName.empty() ? ("Cam " + std::to_string(client.id)) : client.deviceName;
+                    }
+                    if (dev.uniqueId.empty()) {
+                        dev.uniqueId = client.uniqueId;
+                    }
+                    if (dev.ip.empty()) {
+                        dev.ip = client.ip;
+                    }
+                    dev.isUsb = (client.ip == "127.0.0.1");
+                    dev.connected = true;
+
+                    // Keep m_devices up to date
+                    if (m_devices.find(client.id) == m_devices.end()) {
+                        m_devices[client.id] = dev;
+                    } else {
+                        m_devices[client.id].connected = true;
+                        if (!client.deviceName.empty() && (m_devices[client.id].name.empty() || m_devices[client.id].name == "Desconectado")) {
+                            m_devices[client.id].name = client.deviceName;
+                        }
+                        if (!client.ip.empty()) m_devices[client.id].ip = client.ip;
+                    }
+                }
+            }
+
+            for (auto& pair : allDevs) {
+                pair.second.isLocked = m_receiver.IsCameraSlotLocked(pair.first);
+                if (pair.second.uniqueId.empty()) {
+                    pair.second.uniqueId = m_receiver.GetClientUniqueId(pair.first);
+                }
+            }
+
+            // Include offline locked devices so OBS and GUI know their slot is permanently reserved
+            auto lockedSlots = m_receiver.GetLockedSlots();
+            for (const auto& lk : lockedSlots) {
+                if (lk.isLocked && allDevs.find(lk.camId) == allDevs.end()) {
+                    DeviceInfo offlineDev;
+                    offlineDev.id = lk.camId;
+                    offlineDev.name = lk.deviceName.empty() ? ("Cam " + std::to_string(lk.camId)) : lk.deviceName;
+                    offlineDev.ip = "";
+                    offlineDev.uniqueId = lk.uniqueId;
+                    offlineDev.isUsb = false;
+                    offlineDev.isLocked = true;
+                    offlineDev.connected = false;
+                    offlineDev.width = 0;
+                    offlineDev.height = 0;
+                    allDevs[lk.camId] = offlineDev;
+                }
+            }
+
             int activeId = m_activeDeviceId.load();
             bool activeIsUsb = false;
             std::string activeIp = "";
-            if (m_devices.find(activeId) != m_devices.end()) {
-                activeIsUsb = m_devices[activeId].isUsb;
-                activeIp = m_devices[activeId].ip;
+            bool anyConnected = false;
+            for (const auto& pair : allDevs) {
+                if (pair.second.connected) {
+                    anyConnected = true;
+                    break;
+                }
+            }
+            if (anyConnected) {
+                m_status.connected = true;
+                if (allDevs.find(activeId) != allDevs.end() && allDevs[activeId].connected) {
+                    if (m_status.deviceName == "Desconectado" || m_status.deviceName.empty()) {
+                        m_status.deviceName = allDevs[activeId].name;
+                    }
+                }
+            }
+            if (allDevs.find(activeId) != allDevs.end()) {
+                activeIsUsb = allDevs[activeId].isUsb;
+                activeIp = allDevs[activeId].ip;
             }
 
             json << "{"
@@ -980,33 +1074,6 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                 if (i + 1 < m_status.localIps.size()) json << ",";
             }
             json << "],\"devices\":[";
-
-            // Aggregate all devices: connected and offline locked slots
-            std::map<int, DeviceInfo> allDevs = m_devices;
-            for (auto& pair : allDevs) {
-                pair.second.isLocked = m_receiver.IsCameraSlotLocked(pair.first);
-                if (pair.second.uniqueId.empty()) {
-                    pair.second.uniqueId = m_receiver.GetClientUniqueId(pair.first);
-                }
-            }
-
-            // Include offline locked devices so OBS and GUI know their slot is permanently reserved
-            auto lockedSlots = m_receiver.GetLockedSlots();
-            for (const auto& lk : lockedSlots) {
-                if (lk.isLocked && allDevs.find(lk.camId) == allDevs.end()) {
-                    DeviceInfo offlineDev;
-                    offlineDev.id = lk.camId;
-                    offlineDev.name = lk.deviceName.empty() ? ("Cam " + std::to_string(lk.camId)) : lk.deviceName;
-                    offlineDev.ip = "";
-                    offlineDev.uniqueId = lk.uniqueId;
-                    offlineDev.isUsb = false;
-                    offlineDev.isLocked = true;
-                    offlineDev.connected = false;
-                    offlineDev.width = 0;
-                    offlineDev.height = 0;
-                    allDevs[lk.camId] = offlineDev;
-                }
-            }
 
             size_t idx = 0;
             for (const auto& pair : allDevs) {

@@ -268,7 +268,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    tcpReceiver.SetDisconnectedCallback([&httpBridge, &shmProducers](int deviceId) {
+    tcpReceiver.SetDisconnectedCallback([&httpBridge, &shmProducers, &tcpReceiver](int deviceId) {
+        if (tcpReceiver.IsClientConnected(deviceId)) {
+            std::cout << "[Service] Device " << deviceId << " already reconnected with active socket. Skipping disconnect cleanup." << std::endl;
+            return;
+        }
         std::cout << "[Service] Device " << deviceId << " disconnected -> updating HTTP bridge." << std::endl;
         httpBridge.RemoveDevice(deviceId);
         auto it = shmProducers.find(deviceId);
