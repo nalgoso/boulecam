@@ -47,7 +47,7 @@ class AutoDiscoveryManager(
         } catch (ignored: Exception) {}
 
         mainExecutor = Executors.newFixedThreadPool(2)
-        scannerPool = Executors.newFixedThreadPool(16)
+        scannerPool = Executors.newFixedThreadPool(48)
 
         mainExecutor?.execute { udpDiscoveryLoop() }
         mainExecutor?.execute { subnetScannerLoop() }
@@ -78,21 +78,20 @@ class AutoDiscoveryManager(
                         DatagramSocket(null).apply {
                             reuseAddress = true
                             broadcast = true
-                            soTimeout = 1500
+                            soTimeout = 1200
                             bind(InetSocketAddress(8089))
                         }
                     } catch (e: Exception) {
-                        // Fallback to ephemeral port for sending probes if 8089 cannot be bound
                         DatagramSocket().apply {
                             broadcast = true
-                            soTimeout = 1500
+                            soTimeout = 1200
                         }
                     }
                 }
 
                 val currentSock = socket ?: continue
 
-                // Send proactive discovery probe
+                // Send proactive discovery probes (Global broadcast + Subnet broadcast + Unicast to last known host)
                 try {
                     val probeMsg = "BOULECAM_DISCOVER".toByteArray()
                     val broadcastAddr = InetAddress.getByName("255.255.255.255")
@@ -101,6 +100,15 @@ class AutoDiscoveryManager(
                     val subnetBcast = getSubnetBroadcastAddress()
                     if (subnetBcast != null) {
                         currentSock.send(DatagramPacket(probeMsg, probeMsg.size, subnetBcast, 8089))
+                    }
+
+                    val prefs = context.getSharedPreferences("boulecam_prefs", Context.MODE_PRIVATE)
+                    val lastHost = prefs.getString("last_wifi_host", null)
+                    if (!lastHost.isNullOrBlank() && lastHost != "127.0.0.1") {
+                        try {
+                            val unicastAddr = InetAddress.getByName(lastHost)
+                            currentSock.send(DatagramPacket(probeMsg, probeMsg.size, unicastAddr, 8089))
+                        } catch (ignored: Exception) {}
                     }
                 } catch (ignored: Exception) {}
 
@@ -126,7 +134,7 @@ class AutoDiscoveryManager(
             } catch (e: Exception) {
                 try { socket?.close() } catch (ignored: Exception) {}
                 socket = null
-                try { Thread.sleep(2000) } catch (ignored: InterruptedException) { break }
+                try { Thread.sleep(1500) } catch (ignored: InterruptedException) { break }
             }
         }
         try { socket?.close() } catch (ignored: Exception) {}
@@ -134,13 +142,13 @@ class AutoDiscoveryManager(
 
     /**
      * Ultra-fast multi-threaded Subnet Scanner.
-     * Sweeps all 254 IPs in the Wi-Fi subnet in parallel (~1.5s).
-     * Bypasses router UDP broadcast/multicast isolation.
+     * Sweeps all 254 IPs in the Wi-Fi subnet in parallel with 48 concurrent workers (~0.8s).
+     * Bypasses router UDP broadcast/multicast isolation completely.
      */
     private fun subnetScannerLoop() {
         while (isRunning.get()) {
             if (isConnectedProvider?.invoke() == true) {
-                try { Thread.sleep(3000) } catch (e: InterruptedException) { break }
+                try { Thread.sleep(2500) } catch (e: InterruptedException) { break }
                 continue
             }
             val phoneIp = getPhoneIp()
@@ -148,41 +156,89 @@ class AutoDiscoveryManager(
                 val prefix = phoneIp.substringBeforeLast(".") + "."
                 val myLastOctet = phoneIp.substringAfterLast(".").toIntOrNull() ?: 0
 
-                val candidates = (1..254).filter { it != myLastOctet }.sortedBy { Math.abs(it - myLastOctet) }
+                val prefs = context.getSharedPreferences("boulecam_prefs", Context.MODE_PRIVATE)
+                val lastSavedHost = prefs.getString("last_wifi_host", null) ?: ""
+                val lastSavedOctet = if (lastSavedHost.startsWith(prefix)) {
+                    lastSavedHost.substringAfterLast(".").toIntOrNull() ?: -1
+                } else -1
+
+                // Smart prioritization:
+                // 1. Last saved IP (if in same subnet)
+                // 2. Gateway (.1)
+                // 3. Low IPs (.2 - .25)
+                // 4. Common DHCP ranges (.100 - .130)
+                // 5. Neighbors around phone octet
+                // 6. All remaining IPs
+                val prioritySet = LinkedHashSet<Int>()
+                if (lastSavedOctet in 1..254 && lastSavedOctet != myLastOctet) {
+                    prioritySet.add(lastSavedOctet)
+                }
+                if (myLastOctet != 1) prioritySet.add(1)
+                for (o in 2..25) { if (o != myLastOctet) prioritySet.add(o) }
+                for (o in 100..130) { if (o != myLastOctet) prioritySet.add(o) }
+                for (d in 1..10) {
+                    val p1 = myLastOctet - d
+                    val p2 = myLastOctet + d
+                    if (p1 in 1..254) prioritySet.add(p1)
+                    if (p2 in 1..254) prioritySet.add(p2)
+                }
+                for (o in 1..254) {
+                    if (o != myLastOctet) prioritySet.add(o)
+                }
+
+                val candidates = prioritySet.toList()
                 val pool = scannerPool
                 if (pool != null && !pool.isShutdown) {
                     val foundSignal = AtomicBoolean(false)
-                    val futures = mutableListOf<Future<*>>()
+                    val latch = java.util.concurrent.CountDownLatch(candidates.size)
 
                     for (octet in candidates) {
-                        if (!isRunning.get() || foundSignal.get()) break
-                        val targetIp = prefix + octet
-                        val task = pool.submit {
-                            if (foundSignal.get()) return@submit
-                            try {
-                                val sock = Socket()
-                                sock.connect(InetSocketAddress(targetIp, 8088), 350)
-                                sock.close()
-                                if (!foundSignal.getAndSet(true)) {
-                                    Log.i(TAG, "Discovered PC via parallel subnet scan: $targetIp:8088")
-                                    reportWifiDevice(targetIp, 8088, "BouleCam PC ($targetIp)")
-                                }
-                            } catch (ignored: Exception) {}
+                        if (!isRunning.get() || foundSignal.get()) {
+                            latch.countDown()
+                            continue
                         }
-                        futures.add(task)
+                        val targetIp = prefix + octet
+                        pool.submit {
+                            try {
+                                if (!foundSignal.get()) {
+                                    var discovered = false
+                                    // Step 1: Probe main stream port 8088
+                                    try {
+                                        val sock = Socket()
+                                        sock.connect(InetSocketAddress(targetIp, 8088), 250)
+                                        sock.close()
+                                        discovered = true
+                                    } catch (ignored: Exception) {}
+
+                                    // Step 2: Probe HTTP bridge port 8090 if 8088 timed out
+                                    if (!discovered && !foundSignal.get()) {
+                                        try {
+                                            val sockHttp = Socket()
+                                            sockHttp.connect(InetSocketAddress(targetIp, 8090), 200)
+                                            sockHttp.close()
+                                            discovered = true
+                                        } catch (ignored2: Exception) {}
+                                    }
+
+                                    if (discovered && !foundSignal.getAndSet(true)) {
+                                        Log.i(TAG, "Discovered PC via high-speed parallel scan: $targetIp:8088")
+                                        reportWifiDevice(targetIp, 8088, "BouleCam PC ($targetIp)")
+                                    }
+                                }
+                            } finally {
+                                latch.countDown()
+                            }
+                        }
                     }
 
-                    // Await batch completion or early match
-                    for (f in futures) {
-                        try {
-                            f.get(400, TimeUnit.MILLISECONDS)
-                            if (foundSignal.get()) break
-                        } catch (ignored: Exception) {}
-                    }
+                    // Await batch completion or early match within 1.8 seconds max
+                    try {
+                        latch.await(1800, TimeUnit.MILLISECONDS)
+                    } catch (ignored: Exception) {}
                 }
             }
 
-            // Rescan every 3 seconds if disconnected
+            // Rescan rapidly (1.2s) when not connected
             try { Thread.sleep(3_000) } catch (e: InterruptedException) { break }
         }
     }

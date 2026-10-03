@@ -1,7 +1,7 @@
 {
   "name": "boulecam",
   "productName": "BouleCam",
-  "version": "1.4.07",
+  "version": "1.4.08",
   "description": "Puente y control de camara movil de alta definicion para transmisiones en vivo",
   "main": "main.js",
   "author": "Iglesia Boulevard Guzman <contacto@iglesiaboulevardguzman.com.ar>",

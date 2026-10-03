@@ -284,6 +284,15 @@ void TcpReceiver::LoadLockedSlots() {
     std::cout << "[TcpReceiver] Loaded " << m_lockedSlots.size() << " locked camera slot(s) from " << path << std::endl;
 }
 
+void TcpReceiver::ClearAllSlotLocks() {
+    std::lock_guard<std::mutex> lockGuard(m_clientsMutex);
+    m_lockedSlots.clear();
+    SaveLockedSlots();
+    std::string path = GetLocksFilePath();
+    DeleteFileA(path.c_str());
+    std::cout << "[TcpReceiver] All camera slot locks cleared and reset." << std::endl;
+}
+
 bool TcpReceiver::LockCameraSlot(int camId, bool lock, const std::string& uniqueId, const std::string& devName) {
     std::lock_guard<std::mutex> lockGuard(m_clientsMutex);
     if (camId <= 0) return false;

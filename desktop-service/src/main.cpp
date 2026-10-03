@@ -7,6 +7,7 @@
 #include "decoder/video_decoder.h"
 #include "audio/audio_output_manager.h"
 #include <iostream>
+#include <fstream>
 #include <chrono>
 #include <thread>
 #include <iomanip>
@@ -60,6 +61,37 @@ int main(int argc, char* argv[]) {
 
     // 2. Start TCP Low Latency Receiver, HTTP Control Bridge & UDP Auto-Discovery Beacon
     TcpReceiver tcpReceiver;
+
+    // Check version cache or clear-cache argument on startup
+    bool clearCacheRequested = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--clear-cache") {
+            clearCacheRequested = true;
+        }
+    }
+
+    char appDataPath[MAX_PATH];
+    if (GetEnvironmentVariableA("APPDATA", appDataPath, MAX_PATH) > 0) {
+        std::string versionFile = std::string(appDataPath) + "\\BouleCam\\version.txt";
+        std::string currentVersion = "1.4.08";
+        std::string savedVersion = "";
+        std::ifstream vf(versionFile);
+        if (vf.is_open()) {
+            std::getline(vf, savedVersion);
+            vf.close();
+        }
+        if (clearCacheRequested || savedVersion != currentVersion) {
+            std::cout << "[Service] Version upgrade (" << currentVersion << ") or cache wipe requested. Clearing previous locks and blacklists..." << std::endl;
+            tcpReceiver.ClearAllSlotLocks();
+            tcpReceiver.ClearIgnoredClients();
+            std::ofstream outVf(versionFile);
+            if (outVf.is_open()) {
+                outVf << currentVersion;
+                outVf.close();
+            }
+        }
+    }
+
     DiscoveryBeacon discoveryBeacon(BOULECAM_DEFAULT_TCP_PORT, BOULECAM_DEFAULT_UDP_PORT);
     discoveryBeacon.Start();
 
@@ -100,12 +132,13 @@ int main(int argc, char* argv[]) {
     }
 
     httpBridge.SetRescanCallback([&adbManager, &httpBridge, &discoveryBeacon, &tcpReceiver]() {
-        std::cout << "[Service] Rescan triggered. Refreshing USB ADB reverse forwarding and Wi-Fi discovery..." << std::endl;
+        std::cout << "[Service] Rescan triggered. Refreshing USB ADB reverse forwarding, clearing locks and sending Wi-Fi beacons..." << std::endl;
         if (AdbManager::IsAdbInstalled()) {
             bool usbOk = AdbManager::ExecuteAdbReverse(BOULECAM_DEFAULT_TCP_PORT, BOULECAM_DEFAULT_TCP_PORT);
             httpBridge.SetUsbStatus(usbOk);
         }
         tcpReceiver.ClearIgnoredClients();
+        tcpReceiver.ClearAllSlotLocks();
         discoveryBeacon.TriggerBroadcast();
     });
 

@@ -95,6 +95,7 @@ public:
     bool IsCameraSlotLocked(int camId);
     std::vector<LockedCameraSlot> GetLockedSlots();
     LockedCameraSlot GetSlotLock(int camId);
+    void ClearAllSlotLocks();
 
     void SetAudioCallback(AudioReceivedCallback audioCb) { m_audioCallback = audioCb; }
     void SetDisconnectedCallback(ClientDisconnectedCallback discCb) { m_disconnectCallback = discCb; }

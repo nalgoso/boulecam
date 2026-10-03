@@ -8,6 +8,7 @@ let serviceProcess = null;
 let tray = null;
 let isQuitting = false;
 let balloonShown = false;
+let hasClearedVersionCache = false;
 
 // 1. Instancia única: Evitar abrir múltiples copias de la aplicación
 const gotTheLock = app.requestSingleInstanceLock();
@@ -23,7 +24,116 @@ if (!gotTheLock) {
     });
 }
 
+function checkAndCleanVersionCache() {
+    const appData = process.env.APPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming') : null);
+    if (!appData) return;
+
+    const bouleCamDir = path.join(appData, 'BouleCam');
+    try {
+        if (!fs.existsSync(bouleCamDir)) {
+            fs.mkdirSync(bouleCamDir, { recursive: true });
+        }
+    } catch (e) {}
+
+    const versionFile = path.join(bouleCamDir, 'version.txt');
+    const currentVersion = app.getVersion();
+    let isNewVersion = false;
+
+    try {
+        if (!fs.existsSync(versionFile)) {
+            isNewVersion = true;
+        } else {
+            const savedVer = fs.readFileSync(versionFile, 'utf8').trim();
+            if (savedVer !== currentVersion) {
+                isNewVersion = true;
+            }
+        }
+    } catch (e) {
+        isNewVersion = true;
+    }
+
+    if (isNewVersion) {
+        console.log(`[Main] Nueva versión detectada (${currentVersion}). Limpiando cachés anteriores y dispositivos bloqueados...`);
+        hasClearedVersionCache = true;
+
+        // 1. Limpiar archivo de cámaras bloqueadas
+        const locksFile = path.join(bouleCamDir, 'locked_cameras.json');
+        if (fs.existsSync(locksFile)) {
+            try {
+                fs.unlinkSync(locksFile);
+                console.log('[Main] locked_cameras.json eliminado exitosamente.');
+            } catch (e) {
+                console.warn('[Main] No se pudo eliminar locked_cameras.json:', e.message);
+            }
+        }
+
+        // 2. Guardar versión actual
+        try {
+            fs.writeFileSync(versionFile, currentVersion, 'utf8');
+        } catch (e) {}
+    }
+}
+
+function prepareBinaries() {
+    let binDir = path.join(__dirname, '..', 'build', 'Release');
+    if (app.isPackaged) {
+        const bundledInResources = path.join(process.resourcesPath, 'bin');
+        if (fs.existsSync(bundledInResources)) {
+            binDir = bundledInResources;
+        } else {
+            binDir = process.resourcesPath;
+        }
+    }
+
+    const appData = process.env.APPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming') : null);
+    if (!appData) return binDir;
+
+    const permanentBin = path.join(appData, 'BouleCam', 'bin');
+    try {
+        if (!fs.existsSync(permanentBin)) {
+            fs.mkdirSync(permanentBin, { recursive: true });
+        }
+        const filesToCopy = ['boulecam-desktop.exe', 'boulecam-vcam.dll', 'register_vcam.exe'];
+        for (const file of filesToCopy) {
+            const src = path.join(binDir, file);
+            const dst = path.join(permanentBin, file);
+            if (fs.existsSync(src)) {
+                try {
+                    fs.copyFileSync(src, dst);
+                } catch (e) {
+                    console.warn(`[Binaries] Copia omitida (archivo en uso): ${file}`);
+                }
+            }
+        }
+        return permanentBin;
+    } catch (e) {
+        console.warn('[Binaries] Warning copying to AppData:', e.message);
+        return binDir;
+    }
+}
+
+function ensureFirewallRules(exePath) {
+    if (process.platform !== 'win32') return;
+
+    // Registrar reglas de Firewall en Windows para puertos TCP 8088/8090, UDP 8089 y el binario ejecutable
+    const commands = [
+        'netsh advfirewall firewall add rule name="BouleCam Streaming" dir=in action=allow protocol=TCP localport=8088,8090 profile=any enable=yes',
+        'netsh advfirewall firewall add rule name="BouleCam Discovery UDP" dir=in action=allow protocol=UDP localport=8089 profile=any enable=yes',
+        `netsh advfirewall firewall add rule name="BouleCam Desktop Binary" dir=in action=allow program="${exePath}" profile=any enable=yes`
+    ];
+
+    commands.forEach(cmd => {
+        exec(cmd, () => {});
+    });
+}
+
 function getServiceExePath() {
+    const appData = process.env.APPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming') : null);
+    if (appData) {
+        const permanentExe = path.join(appData, 'BouleCam', 'bin', 'boulecam-desktop.exe');
+        if (fs.existsSync(permanentExe)) return permanentExe;
+    }
+
     if (app.isPackaged) {
         const bundledInResources = path.join(process.resourcesPath, 'bin', 'boulecam-desktop.exe');
         if (fs.existsSync(bundledInResources)) return bundledInResources;
@@ -45,6 +155,8 @@ function startBackendService() {
             const { execSync } = require('child_process');
             execSync('taskkill /F /IM boulecam-desktop.exe >nul 2>&1');
         } catch (ignored) {}
+
+        ensureFirewallRules(exePath);
 
         console.log('[Main] Iniciando motor C++ en segundo plano:', exePath);
         try {
@@ -159,6 +271,12 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
+    if (hasClearedVersionCache) {
+        mainWindow.webContents.session.clearStorageData().catch(() => {});
+        mainWindow.webContents.session.clearCache().catch(() => {});
+        console.log('[Main] Caché web y almacenamiento local limpiados por actualización de versión.');
+    }
+
     // Evitar cierre accidental: Si el usuario presiona la X o cierra desde la barra de tareas,
     // se oculta al System Tray (área de notificaciones) para proteger la transmisión en vivo.
     mainWindow.on('close', (event) => {
@@ -248,6 +366,8 @@ function autoRegisterVirtualCamera() {
 }
 
 app.whenReady().then(() => {
+    checkAndCleanVersionCache();
+    prepareBinaries();
     autoRegisterVirtualCamera();
     startBackendService();
     createWindow();

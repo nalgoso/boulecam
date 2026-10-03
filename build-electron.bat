@@ -78,10 +78,12 @@ cd ..
 
 :: 5. Comprobar resultado y copiar a la raiz
 set "OUTPUT_EXE=desktop-app\dist\BouleCam-v%APP_VERSION%.exe"
+if not exist "%OUTPUT_EXE%" (
+    for %%f in ("desktop-app\dist\BouleCam-v*.exe") do set "OUTPUT_EXE=%%f"
+)
 if exist "%OUTPUT_EXE%" (
     copy /y "%OUTPUT_EXE%" "BouleCam-v%APP_VERSION%.exe" >nul
-    if exist "BouleCam.exe" del /f /q "BouleCam.exe" >nul 2>&1
-    if exist "desktop-app\dist\BouleCam.exe" del /f /q "desktop-app\dist\BouleCam.exe" >nul 2>&1
+    copy /y "%OUTPUT_EXE%" "BouleCam.exe" >nul
     echo.
     echo ==========================================================
     echo [EXITO] Ejecutable standalone generado correctamente:

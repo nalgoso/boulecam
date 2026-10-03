@@ -144,6 +144,20 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
 
+        // Limpiar caché y configuraciones de versiones anteriores al detectar nueva versión
+        val currentVersion = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "1.4.08"
+        } catch (e: Exception) {
+            "1.4.08"
+        }
+        val prefs = getSharedPreferences("boulecam_prefs", MODE_PRIVATE)
+        val savedVersion = prefs.getString("app_version", "")
+        if (savedVersion != currentVersion) {
+            android.util.Log.i("BouleCam", "Nueva versión detectada ($currentVersion vs $savedVersion). Limpiando configuraciones y cachés anteriores...")
+            prefs.edit().clear().putString("app_version", currentVersion).apply()
+            lastWifiHost = null
+        }
+
         // Start Foreground Service to keep CPU and Camera active on tripod
         BouleCamStreamService.start(this)
 
@@ -252,9 +266,6 @@ class MainActivity : AppCompatActivity() {
             if (!connected && isUsbMode) {
                 // If in USB mode and cable unplugs, seamlessly fallback to Wi-Fi
                 setConnectionMode(usb = false, showToast = false)
-            } else if (connected && !isUsbMode && sender?.isConnected() != true) {
-                // USB plugged in and not currently streaming on Wi-Fi: auto-connect via USB
-                setConnectionMode(usb = true, showToast = false)
             }
             updateConnectionButtonsUI()
         }
@@ -594,13 +605,22 @@ class MainActivity : AppCompatActivity() {
     private fun checkCameraPermission(): Boolean {
         val cam = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        return cam && mic
+        val notif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        return cam && mic && notif
     }
 
     private fun requestCameraPermission() {
+        val perms = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         ActivityCompat.requestPermissions(
             this,
-            arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO),
+            perms.toTypedArray(),
             CAMERA_PERMISSION_CODE
         )
     }
@@ -736,7 +756,7 @@ class MainActivity : AppCompatActivity() {
                         audioPipeline?.start()
                         sendCurrentTelemetry()
                     } else {
-                        val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi"
+                        val searchingLabel = if (isUsbMode) "Cable USB" else "WiFi \u2022 Toca para IP"
                         statusTextView?.text = "STATUS: BUSCANDO PC ($searchingLabel)..."
                         statusTextView?.setTextColor(COLOR_GRAY)
                         fpsTextView?.text = "-- FPS \u2022 0.0 Mbps"
@@ -786,8 +806,13 @@ class MainActivity : AppCompatActivity() {
 
                 val alreadyConnectedToThisHost = sender?.isConnected() == true &&
                     sender?.getHost() == device.ip && sender?.getPort() == device.port
-                if (!isUsbMode && !alreadyConnectedToThisHost) {
-                    sender?.setHost(device.ip, device.port)
+                if (!alreadyConnectedToThisHost) {
+                    // Connect immediately to discovered Wi-Fi PC unless already streaming via USB
+                    if (!isUsbMode || sender?.isConnected() != true) {
+                        isUsbMode = false
+                        updateConnectionButtonsUI()
+                        sender?.setHost(device.ip, device.port)
+                    }
                 }
             }
         }
