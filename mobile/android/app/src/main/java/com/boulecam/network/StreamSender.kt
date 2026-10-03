@@ -196,7 +196,7 @@ class StreamSender(
 
                     // Main send loop — exits on host change, stop, or socket failure
                     try {
-                        while (isRunning.get() && !sock.isClosed && host == targetHost && port == targetPort) {
+                        while (isRunning.get() && !sock.isClosed && isConnected.get() && host == targetHost && port == targetPort) {
                             val packet = sendQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
                             if (packet != null) {
                                 synchronized(streamLock) {
@@ -258,7 +258,14 @@ class StreamSender(
                 var total = 0
                 while (total < 22 && isConnected.get()) {
                     val r = inStream.read(cmdBuffer, total, 22 - total)
-                    if (r < 0) return
+                    if (r < 0) {
+                        Log.i(TAG, "Socket closed by remote server (EOF). Disconnecting client.")
+                        try { sock.close() } catch (ignored: Exception) {}
+                        if (isConnected.getAndSet(false)) {
+                            onConnectionStateChanged(false)
+                        }
+                        return
+                    }
                     total += r
                 }
 
@@ -280,6 +287,11 @@ class StreamSender(
             } catch (e: java.net.SocketTimeoutException) {
                 continue
             } catch (e: Exception) {
+                Log.w(TAG, "Reader thread socket error: ${e.message}")
+                try { sock.close() } catch (ignored: Exception) {}
+                if (isConnected.getAndSet(false)) {
+                    onConnectionStateChanged(false)
+                }
                 break
             }
         }

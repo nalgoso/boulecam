@@ -227,7 +227,12 @@ class MainActivity : AppCompatActivity() {
             addAction(Intent.ACTION_POWER_DISCONNECTED)
             addAction(Intent.ACTION_BATTERY_CHANGED)
         }
-        registerReceiver(usbReceiver, filter)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            usbReceiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     private fun checkUsbCableState() {
@@ -773,7 +778,7 @@ class MainActivity : AppCompatActivity() {
         sender?.start()
 
 
-        discoveryManager = AutoDiscoveryManager(this) { device ->
+        discoveryManager = AutoDiscoveryManager(this, isConnectedProvider = { sender?.isConnected() == true }) { device ->
             runOnUiThread {
                 lastWifiHost = device.ip
                 lastWifiPort = device.port

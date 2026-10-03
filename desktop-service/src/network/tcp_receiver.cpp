@@ -530,9 +530,22 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
         }
 
         if (magic != BOULECAM_MAGIC) {
-            std::cerr << "[TcpReceiver] Invalid magic byte sequence: 0x" 
-                      << std::hex << magic << std::dec << std::endl;
-            break;
+            // Stream desynchronization recovery: slide byte-by-byte until BOULECAM_MAGIC is found
+            size_t skipped = 0;
+            while (magic != BOULECAM_MAGIC && m_isRunning.load() && skipped < 131072) {
+                uint8_t nextByte = 0;
+                if (!ReceiveExact(clientSocket, &nextByte, 1)) {
+                    break;
+                }
+                magic = (magic >> 8) | (static_cast<uint32_t>(nextByte) << 24);
+                skipped++;
+            }
+            if (magic != BOULECAM_MAGIC) {
+                std::cerr << "[TcpReceiver] Stream desync: Could not find BOULECAM_MAGIC (" 
+                          << skipped << " bytes skipped). Terminating connection." << std::endl;
+                break;
+            }
+            std::cout << "[TcpReceiver] Stream resynchronized after " << skipped << " skipped bytes." << std::endl;
         }
 
         // Step 2: Read the packet type
@@ -584,10 +597,11 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 for (auto& lockPair : m_lockedSlots) {
                     if (!lockPair.second.isLocked) continue;
 
+                    bool hasTargetUid = (!lockPair.second.uniqueId.empty() && lockPair.second.uniqueId.find("dev_") != 0);
                     bool uidMatch = (!devUid.empty() && lockPair.second.uniqueId == devUid);
                     bool substringMatch = (!devUid.empty() && !lockPair.second.uniqueId.empty() &&
                         (lockPair.second.uniqueId.find(devUid) != std::string::npos || devUid.find(lockPair.second.uniqueId) != std::string::npos));
-                    bool nameMatch = (!isGenericDev && (lockPair.second.deviceName == devName || lockPair.second.uniqueId == ("dev_" + devName)));
+                    bool nameMatch = (!hasTargetUid && !isGenericDev && (lockPair.second.deviceName == devName || lockPair.second.uniqueId == ("dev_" + devName)));
 
                     if (uidMatch || substringMatch || nameMatch) {
                         assignedId = lockPair.first;
@@ -611,7 +625,12 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
 
                     auto itOcc = m_clients.find(assignedId);
                     if (itOcc != m_clients.end()) {
-                        if (itOcc->second.uniqueId == devUid || itOcc->second.deviceName == devName) {
+                        bool uidsKnown = (!devUid.empty() && !itOcc->second.uniqueId.empty() &&
+                                          devUid.find("dev_") != 0 && itOcc->second.uniqueId.find("dev_") != 0);
+                        bool sameUid = (uidsKnown && itOcc->second.uniqueId == devUid);
+                        bool sameDev = (!uidsKnown && !isGenericDev && itOcc->second.deviceName == devName);
+
+                        if (sameUid || sameDev) {
                             // Reconnect of same device
                             if (itOcc->second.socket != clientSocket && itOcc->second.socket != INVALID_SOCKET) {
                                 closesocket(itOcc->second.socket);
@@ -669,8 +688,10 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                 } else {
                     // PRIORITY 2: Not locked. Check if reconnecting to an existing slot
                     for (auto& pair : m_clients) {
-                        bool sameUid = (!devUid.empty() && pair.second.uniqueId == devUid);
-                        bool sameDev = (!isGenericDev && pair.second.deviceName == devName);
+                        bool uidsKnown = (!devUid.empty() && !pair.second.uniqueId.empty() &&
+                                          devUid.find("dev_") != 0 && pair.second.uniqueId.find("dev_") != 0);
+                        bool sameUid = (uidsKnown && pair.second.uniqueId == devUid);
+                        bool sameDev = (!uidsKnown && !isGenericDev && pair.second.deviceName == devName);
 
                         if (sameUid || sameDev) {
                             assignedId = pair.first;
@@ -700,8 +721,15 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                             bool lockedToOther = false;
                             auto itLock = m_lockedSlots.find(assignedId);
                             if (itLock != m_lockedSlots.end() && itLock->second.isLocked) {
-                                if (itLock->second.uniqueId != devUid && itLock->second.deviceName != devName) {
-                                    lockedToOther = true;
+                                bool hasSpecificUid = (!itLock->second.uniqueId.empty() && itLock->second.uniqueId.find("dev_") != 0);
+                                if (hasSpecificUid) {
+                                    if (itLock->second.uniqueId != devUid) {
+                                        lockedToOther = true;
+                                    }
+                                } else {
+                                    if (itLock->second.uniqueId != devUid && itLock->second.deviceName != devName) {
+                                        lockedToOther = true;
+                                    }
                                 }
                             }
                             if (!occupied && !lockedToOther) {
@@ -769,8 +797,30 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
             }
         } else if (packetType == BOULECAM_PKT_CAMERA_STATE) {
             BouleCamCameraState state{};
-            if (!ReceiveExact(clientSocket, (uint8_t*)&state + 5, sizeof(state) - 5)) {
+            state.magic = magic;
+            state.packet_type = packetType;
+
+            // Read the 29 common payload bytes (v1.1.0 through v1.4.05+)
+            // Fields: current_lens(1), torch_on(1), current_iso(4), current_exposure_ns(8),
+            // current_ev(4), current_wb(1), current_focus(4), mic_enabled(1), battery_level(4), dim_screen_active(1)
+            constexpr size_t kCommonTelemetryPayloadSize = 29;
+            if (!ReceiveExact(clientSocket, (uint8_t*)&state + 5, kCommonTelemetryPayloadSize)) {
                 break;
+            }
+
+            // Resilient compatibility with v1.4.06+ is_charging byte:
+            // Every next packet starts with BOULECAM_MAGIC (first byte 0x42 'B').
+            // is_charging is always 0 or 1, never 0x42.
+            // Peek 1 byte to determine if is_charging was appended or if next packet is starting.
+            uint8_t peekByte = 0;
+            int peekRes = recv(clientSocket, (char*)&peekByte, 1, MSG_PEEK);
+            if (peekRes > 0 && peekByte != 0x42) {
+                uint8_t chargingByte = 0;
+                if (ReceiveExact(clientSocket, &chargingByte, 1)) {
+                    state.is_charging = chargingByte;
+                }
+            } else {
+                state.is_charging = 0;
             }
 
             int currentId = deviceIdRef->load();

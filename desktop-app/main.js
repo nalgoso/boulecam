@@ -159,9 +159,24 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
+    // Evitar cierre accidental: Si el usuario presiona la X o cierra desde la barra de tareas,
+    // se oculta al System Tray (área de notificaciones) para proteger la transmisión en vivo.
     mainWindow.on('close', (event) => {
-        isQuitting = true;
-        app.quit();
+        if (!isQuitting) {
+            event.preventDefault();
+            mainWindow.hide();
+
+            // Notificación informativa solo la primera vez que se oculta
+            if (tray && !balloonShown) {
+                balloonShown = true;
+                tray.displayBalloon({
+                    title: 'BouleCam activa en segundo plano',
+                    content: 'BouleCam sigue funcionando para tu transmisión. Puedes abrirla desde los iconos ocultos junto al reloj.',
+                    iconType: 'info'
+                });
+            }
+            return false;
+        }
     });
 
     mainWindow.on('closed', () => {
@@ -269,7 +284,7 @@ app.on('will-quit', () => {
     } catch (ignored) {}
 });
 
+// No cerrar al cerrar ventanas, mantener en tray
 app.on('window-all-closed', () => {
-    isQuitting = true;
-    app.quit();
+    // Mantener la app activa en el System Tray
 });

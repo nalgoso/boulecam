@@ -21,6 +21,7 @@ data class DiscoveredDevice(
 
 class AutoDiscoveryManager(
     private val context: Context,
+    private val isConnectedProvider: (() -> Boolean)? = null,
     private val onDeviceFound: (DiscoveredDevice) -> Unit
 ) {
     private val TAG = "BouleCamDiscovery"
@@ -138,6 +139,10 @@ class AutoDiscoveryManager(
      */
     private fun subnetScannerLoop() {
         while (isRunning.get()) {
+            if (isConnectedProvider?.invoke() == true) {
+                try { Thread.sleep(3000) } catch (e: InterruptedException) { break }
+                continue
+            }
             val phoneIp = getPhoneIp()
             if (phoneIp.isNotEmpty() && phoneIp.contains(".")) {
                 val prefix = phoneIp.substringBeforeLast(".") + "."
