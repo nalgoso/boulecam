@@ -66,6 +66,7 @@
           <div>
             <h3 style="color:#fff; font-size:1.1rem; margin-bottom:4px;">Esperando señal del teléfono</h3>
             <p style="font-size:0.85rem; margin-bottom:4px; color:rgba(255,255,255,0.6);">Conecta tu teléfono por cable USB o por Wi-Fi</p>
+            <p id="lbl-pc-wifi-ip" style="font-size:0.85rem; margin-top:8px; color:var(--accent-cyan); font-weight:600;"></p>
           </div>
         </div>
 
@@ -192,6 +193,33 @@
 
         <!-- Physical Microphone Volume Activity Level & Windows-Style Gain (dB) -->
         <div class="control-row audio-control-box" style="margin-top:10px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.08);">
+          
+          <!-- Selector Modo de Micrófono (Ambiente vs Principal) -->
+          <div style="margin-bottom:12px; padding:9px 10px; background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid rgba(255,255,255,0.07);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:0.78rem; font-weight:600; color:var(--text-light); display:flex; align-items:center; gap:6px;">
+                <span>🎧</span> Modo de Micrófono
+              </span>
+              <span id="badge-mic-mode" class="badge-status-pill" style="font-size:0.68rem; padding:2px 8px; border-radius:10px; background:rgba(0,229,255,0.12); color:var(--accent-cyan); font-weight:700;">
+                Principal
+              </span>
+            </div>
+
+            <!-- Segmented Switch -->
+            <div class="mic-mode-toggle-group">
+              <button type="button" id="btn-mic-mode-main" class="mic-mode-btn active" title="Sonido directo completo (0 dB). Respuesta plana para usar el teléfono como micrófono principal.">
+                🎙️ Micrófono Principal
+              </button>
+              <button type="button" id="btn-mic-mode-ambient" class="mic-mode-btn" title="Filtro pasa-altos (Low-Cut 220Hz) + Atenuación ambiente. Limpia graves del PA y evita ruido/desfase con la consola.">
+                🏛️ Micrófono Ambiente
+              </button>
+            </div>
+
+            <div id="desc-mic-mode" style="margin-top:6px; font-size:0.67rem; color:var(--text-muted); line-height:1.35;">
+              Respuesta plana completa (0 dB). Ideal si el teléfono es la única fuente de audio.
+            </div>
+          </div>
+
           <div class="control-label" style="margin-bottom:6px;">
             <span style="display:flex; align-items:center; gap:6px; font-weight:600; font-size:0.82rem;">
               <span id="audio-meter-icon">🎙️</span> Ganancia de Entrada
@@ -257,6 +285,18 @@
             </div>
             <label class="switch">
               <input type="checkbox" id="toggle-audio" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <!-- Ambient Mic Toggle in Settings Modal -->
+          <div class="settings-toggle-row">
+            <div class="settings-toggle-info">
+              <span class="settings-toggle-name">Micrófono Ambiente (Congregación)</span>
+              <span class="settings-toggle-hint" id="settings-audio-mode-hint">Filtro Low-Cut 220Hz para mezclar con consola</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="toggle-audio-ambient-mode">
               <span class="slider round"></span>
             </label>
           </div>

@@ -2,10 +2,81 @@
 #include <iostream>
 #include <chrono>
 #include <iphlpapi.h>
+#include <algorithm>
 
 #pragma comment(lib, "iphlpapi.lib")
 
 namespace boulecam {
+
+struct SubnetDetail {
+    std::string localIp;
+    std::string subnetPrefix;
+    std::string broadcastIp;
+};
+
+static std::vector<SubnetDetail> GetActiveSubnets() {
+    std::vector<SubnetDetail> subnets;
+    ULONG outBufLen = 32000;
+    PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+    if (!pAddresses) return subnets;
+
+    DWORD dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+    if (dwRet == ERROR_BUFFER_OVERFLOW) {
+        free(pAddresses);
+        pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+        if (pAddresses) {
+            dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+        }
+    }
+
+    if (pAddresses && dwRet == NO_ERROR) {
+        for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr; pCurr = pCurr->Next) {
+            if (pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+            if (pCurr->OperStatus != IfOperStatusUp) continue;
+
+            std::wstring desc = pCurr->Description ? pCurr->Description : L"";
+            std::wstring friendly = pCurr->FriendlyName ? pCurr->FriendlyName : L"";
+            bool isVirtual = (friendly.find(L"vEthernet") != std::wstring::npos ||
+                              friendly.find(L"Tailscale") != std::wstring::npos ||
+                              friendly.find(L"VirtualBox") != std::wstring::npos ||
+                              friendly.find(L"VMware") != std::wstring::npos ||
+                              friendly.find(L"ZeroTier") != std::wstring::npos ||
+                              desc.find(L"Virtual") != std::wstring::npos ||
+                              desc.find(L"Hyper-V") != std::wstring::npos);
+            if (isVirtual) continue;
+
+            for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurr->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
+                sockaddr_in* sa_in = (sockaddr_in*)pUnicast->Address.lpSockaddr;
+                char ipStr[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &(sa_in->sin_addr), ipStr, INET_ADDRSTRLEN);
+                std::string ip(ipStr);
+
+                if (ip == "127.0.0.1" || ip.rfind("169.254.", 0) == 0 || ip.rfind("0.", 0) == 0) continue;
+
+                size_t lastDot = ip.rfind('.');
+                if (lastDot != std::string::npos) {
+                    SubnetDetail detail;
+                    detail.localIp = ip;
+                    detail.subnetPrefix = ip.substr(0, lastDot + 1);
+                    detail.broadcastIp = ip.substr(0, lastDot) + ".255";
+
+                    bool alreadyExists = false;
+                    for (const auto& s : subnets) {
+                        if (s.subnetPrefix == detail.subnetPrefix) {
+                            alreadyExists = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyExists) {
+                        subnets.push_back(detail);
+                    }
+                }
+            }
+        }
+    }
+    if (pAddresses) free(pAddresses);
+    return subnets;
+}
 
 DiscoveryBeacon::DiscoveryBeacon(uint16_t tcpPort, uint16_t udpPort)
     : m_tcpPort(tcpPort)
@@ -65,9 +136,12 @@ bool DiscoveryBeacon::Start() {
 
 void DiscoveryBeacon::Stop() {
     m_isRunning.store(false);
-    if (m_udpSocket != INVALID_SOCKET) {
-        closesocket(m_udpSocket);
-        m_udpSocket = INVALID_SOCKET;
+    {
+        std::lock_guard<std::mutex> lock(m_socketMutex);
+        if (m_udpSocket != INVALID_SOCKET) {
+            closesocket(m_udpSocket);
+            m_udpSocket = INVALID_SOCKET;
+        }
     }
     if (m_responderThread.joinable()) {
         m_responderThread.join();
@@ -77,78 +151,13 @@ void DiscoveryBeacon::Stop() {
     }
 }
 
-static std::vector<std::string> GetLocalBroadcastAddresses() {
-    std::vector<std::string> bcastList;
-    ULONG outBufLen = 32000;
-    PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
-    if (!pAddresses) return bcastList;
-
-    DWORD dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
-    if (dwRet == ERROR_BUFFER_OVERFLOW) {
-        free(pAddresses);
-        pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
-        if (pAddresses) {
-            dwRet = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
-        }
-    }
-
-    if (pAddresses && dwRet == NO_ERROR) {
-        for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr; pCurr = pCurr->Next) {
-            if (pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
-            for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurr->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
-                sockaddr_in* sa_in = (sockaddr_in*)pUnicast->Address.lpSockaddr;
-                char ipStr[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &(sa_in->sin_addr), ipStr, INET_ADDRSTRLEN);
-                std::string ip(ipStr);
-                if (ip != "127.0.0.1" && ip.rfind("169.254.", 0) != 0 && ip.rfind("0.", 0) != 0) {
-                    size_t lastDot = ip.rfind('.');
-                    if (lastDot != std::string::npos) {
-                        std::string bcast = ip.substr(0, lastDot) + ".255";
-                        if (std::find(bcastList.begin(), bcastList.end(), bcast) == bcastList.end()) {
-                            bcastList.push_back(bcast);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (pAddresses) free(pAddresses);
-    return bcastList;
-}
-
-void DiscoveryBeacon::BeaconWorker() {
+void DiscoveryBeacon::SendDiscoveryProbes() {
     std::string beaconMsg = "BOULECAM_BEACON:" + std::to_string(m_tcpPort) + ":" + m_hostname;
 
-    sockaddr_in broadcastAddr{};
-    broadcastAddr.sin_family = AF_INET;
-    broadcastAddr.sin_addr.s_addr = INADDR_BROADCAST; // 255.255.255.255
-    broadcastAddr.sin_port = htons(m_udpPort);
-
-    while (m_isRunning.load()) {
-        if (m_udpSocket != INVALID_SOCKET) {
-            // Global broadcast
-            sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
-                   (sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
-
-            // Specific local subnet broadcasts for all active network adapters
-            auto subnets = GetLocalBroadcastAddresses();
-            for (const auto& bcastIp : subnets) {
-                sockaddr_in subAddr{};
-                subAddr.sin_family = AF_INET;
-                inet_pton(AF_INET, bcastIp.c_str(), &subAddr.sin_addr);
-                subAddr.sin_port = htons(m_udpPort);
-                sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
-                       (sockaddr*)&subAddr, sizeof(subAddr));
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-}
-
-void DiscoveryBeacon::TriggerBroadcast() {
+    std::lock_guard<std::mutex> lock(m_socketMutex);
     if (m_udpSocket == INVALID_SOCKET) return;
-    std::string beaconMsg = "BOULECAM_BEACON:" + std::to_string(m_tcpPort) + ":" + m_hostname;
 
+    // 1. Global Broadcast to 255.255.255.255
     sockaddr_in broadcastAddr{};
     broadcastAddr.sin_family = AF_INET;
     broadcastAddr.sin_addr.s_addr = INADDR_BROADCAST;
@@ -156,15 +165,44 @@ void DiscoveryBeacon::TriggerBroadcast() {
     sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
            (sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
 
-    auto subnets = GetLocalBroadcastAddresses();
-    for (const auto& bcastIp : subnets) {
+    // 2. Directed subnet broadcast + Unicast sweeps for all active physical subnets
+    auto subnets = GetActiveSubnets();
+    for (const auto& sub : subnets) {
+        // Directed subnet broadcast (e.g. 192.168.1.255)
         sockaddr_in subAddr{};
         subAddr.sin_family = AF_INET;
-        inet_pton(AF_INET, bcastIp.c_str(), &subAddr.sin_addr);
+        inet_pton(AF_INET, sub.broadcastIp.c_str(), &subAddr.sin_addr);
         subAddr.sin_port = htons(m_udpPort);
         sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
                (sockaddr*)&subAddr, sizeof(subAddr));
+
+        // Unicast sweep across local subnet (bypasses router broadcast/multicast isolation entirely)
+        for (int host = 1; host <= 254; ++host) {
+            std::string targetIp = sub.subnetPrefix + std::to_string(host);
+            if (targetIp == sub.localIp) continue; // Skip self
+
+            sockaddr_in targetAddr{};
+            targetAddr.sin_family = AF_INET;
+            inet_pton(AF_INET, targetIp.c_str(), &targetAddr.sin_addr);
+            targetAddr.sin_port = htons(m_udpPort);
+            sendto(m_udpSocket, beaconMsg.c_str(), static_cast<int>(beaconMsg.size()), 0,
+                   (sockaddr*)&targetAddr, sizeof(targetAddr));
+        }
     }
+}
+
+void DiscoveryBeacon::BeaconWorker() {
+    while (m_isRunning.load()) {
+        SendDiscoveryProbes();
+        // Periodically announce presence every 2 seconds
+        for (int i = 0; i < 20 && m_isRunning.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+}
+
+void DiscoveryBeacon::TriggerBroadcast() {
+    SendDiscoveryProbes();
 }
 
 void DiscoveryBeacon::ResponderWorker() {
@@ -182,21 +220,30 @@ void DiscoveryBeacon::ResponderWorker() {
         buffer[bytes] = '\0';
         std::string msg(buffer);
 
+        // Discard own beacons echoed back on INADDR_ANY
+        if (msg.rfind("BOULECAM_BEACON", 0) == 0 || msg.rfind("BOULECAM_OFFER", 0) == 0) {
+            continue;
+        }
+
         // If a mobile phone sends "BOULECAM_DISCOVER", reply immediately with "BOULECAM_OFFER:<PORT>:<HOSTNAME>"
         if (msg.find("BOULECAM_DISCOVER") != std::string::npos) {
             char clientIp[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &(clientAddr.sin_addr), clientIp, INET_ADDRSTRLEN);
 
             std::string replyMsg = "BOULECAM_OFFER:" + std::to_string(m_tcpPort) + ":" + m_hostname;
-            // Reply directly to client address and port
-            sendto(m_udpSocket, replyMsg.c_str(), static_cast<int>(replyMsg.size()), 0,
-                   (sockaddr*)&clientAddr, clientLen);
 
-            // Also reply to client address on standard discovery port 8089
-            sockaddr_in port8089 = clientAddr;
-            port8089.sin_port = htons(m_udpPort);
-            sendto(m_udpSocket, replyMsg.c_str(), static_cast<int>(replyMsg.size()), 0,
-                   (sockaddr*)&port8089, sizeof(port8089));
+            std::lock_guard<std::mutex> lock(m_socketMutex);
+            if (m_udpSocket != INVALID_SOCKET) {
+                // Reply directly to client source address and port (unicast)
+                sendto(m_udpSocket, replyMsg.c_str(), static_cast<int>(replyMsg.size()), 0,
+                       (sockaddr*)&clientAddr, clientLen);
+
+                // Also reply to client address on standard discovery port 8089
+                sockaddr_in port8089 = clientAddr;
+                port8089.sin_port = htons(m_udpPort);
+                sendto(m_udpSocket, replyMsg.c_str(), static_cast<int>(replyMsg.size()), 0,
+                       (sockaddr*)&port8089, sizeof(port8089));
+            }
 
             std::cout << "[Discovery] Received probe from mobile " << clientIp << ". Sent auto-discovery offer." << std::endl;
         }

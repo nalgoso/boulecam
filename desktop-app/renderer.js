@@ -25,6 +25,7 @@ let currentLens = 0;
 let isTorchOn = false;
 let isMicEnabled = true;
 let micGainDb = 0;
+let isAmbientMicMode = false;
 let isAutoAF = true;
 let isMirrored = false;
 let manualRotation = 0;
@@ -65,6 +66,48 @@ function showToast(message, duration = 2500) {
   toastTimeout = setTimeout(() => {
     toast.style.display = 'none';
   }, duration);
+}
+
+function renderMicModeUI(isAmbient) {
+  isAmbientMicMode = isAmbient;
+  const btnMain = document.getElementById('btn-mic-mode-main');
+  const btnAmbient = document.getElementById('btn-mic-mode-ambient');
+  const badgeMode = document.getElementById('badge-mic-mode');
+  const descMode = document.getElementById('desc-mic-mode');
+  const toggleAmbientModal = document.getElementById('toggle-audio-ambient-mode');
+
+  if (btnMain) {
+    btnMain.classList.toggle('active', !isAmbient);
+  }
+  if (btnAmbient) {
+    btnAmbient.classList.toggle('active', isAmbient);
+    btnAmbient.classList.toggle('ambient', isAmbient);
+  }
+  if (badgeMode) {
+    badgeMode.textContent = isAmbient ? 'Ambiente (Congregación)' : 'Principal';
+    badgeMode.style.background = isAmbient ? 'rgba(16, 185, 129, 0.16)' : 'rgba(0, 229, 255, 0.12)';
+    badgeMode.style.color = isAmbient ? '#34d399' : 'var(--accent-cyan)';
+  }
+  if (descMode) {
+    descMode.textContent = isAmbient
+      ? '🏛️ Filtro Pasa-Altos (Low-Cut 220Hz) + Atenuación ambiente activa. Limpia graves del PA y evita choque con la consola.'
+      : '🎙️ Respuesta plana completa (0 dB). Ideal si el teléfono es la única fuente de audio.';
+  }
+  if (toggleAmbientModal) {
+    toggleAmbientModal.checked = isAmbient;
+  }
+}
+
+async function setMicAmbientMode(wantAmbient) {
+  renderMicModeUI(wantAmbient);
+  saveCurrentConfig({ isAmbientMic: wantAmbient });
+  try {
+    await fetch(`${API_BASE}/api/mic/mode?cam=${activeCamId}&mode=${wantAmbient ? 'ambient' : 'main'}`, { method: 'POST' });
+  } catch (err) {}
+  showToast(wantAmbient
+    ? '🏛️ Modo Micrófono Ambiente activado (Filtro Low-Cut 220Hz)'
+    : '🎙️ Modo Micrófono Principal activado (Respuesta Plana)'
+  );
 }
 
 function getDeviceKey(camId, deviceName) {
@@ -245,6 +288,10 @@ function applyActiveConfigToUI(syncHardware = true) {
   if (valMicGain) {
     valMicGain.textContent = micGainDb > 0 ? `+${micGainDb.toFixed(1)} dB` : `${micGainDb.toFixed(1)} dB`;
   }
+
+  // Mic mode state (Principal vs Ambiente)
+  isAmbientMicMode = (cfg.isAmbientMic !== undefined) ? cfg.isAmbientMic : false;
+  renderMicModeUI(isAmbientMicMode);
 
   if (btnDimScreen) {
     btnDimScreen.classList.toggle('active-dim', isDimScreenActive);
@@ -942,6 +989,11 @@ function updateUIStatus(data) {
         }
       }
     }
+
+    // Mic Ambient Mode sync from backend status
+    if (curDev && curDev.isAmbientMic !== undefined && curDev.isAmbientMic !== isAmbientMicMode) {
+      renderMicModeUI(curDev.isAmbientMic);
+    }
   } else {
     if (!hasRecentFrames) {
       statusDot.classList.remove('connected');
@@ -1336,6 +1388,20 @@ function setupEvents() {
         await fetch(`${API_BASE}/api/mic/gain?cam=${activeCamId}&db=${val}`, { method: 'POST' });
       } catch (err) {}
     });
+  }
+
+  // Microphone Mode Buttons & Settings Modal Toggle
+  const btnMicModeMain = document.getElementById('btn-mic-mode-main');
+  const btnMicModeAmbient = document.getElementById('btn-mic-mode-ambient');
+  const toggleAmbientModal = document.getElementById('toggle-audio-ambient-mode');
+  if (btnMicModeMain) {
+    btnMicModeMain.addEventListener('click', () => setMicAmbientMode(false));
+  }
+  if (btnMicModeAmbient) {
+    btnMicModeAmbient.addEventListener('click', () => setMicAmbientMode(true));
+  }
+  if (toggleAmbientModal) {
+    toggleAmbientModal.addEventListener('change', (e) => setMicAmbientMode(e.target.checked));
   }
 
   // Force Rescan / Device Discovery Button

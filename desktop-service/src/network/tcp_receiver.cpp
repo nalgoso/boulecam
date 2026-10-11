@@ -126,11 +126,11 @@ bool TcpReceiver::DisconnectClient(int deviceId, bool blockFutureReconnect) {
     auto it = m_clients.find(deviceId);
     if (it != m_clients.end()) {
         if (blockFutureReconnect) {
-            if (!it->second.ip.empty() && it->second.ip != "127.0.0.1") {
-                m_ignoredClients.insert(it->second.ip);
-            }
-            if (!it->second.deviceName.empty()) {
-                m_ignoredClients.insert(it->second.deviceName);
+            // Only block specific non-generic unique IDs to avoid blocking all phones or dynamic IPs
+            const std::string& uid = it->second.uniqueId;
+            if (!uid.empty() && uid != "dev_usb_client" && uid != "dev_wifi_client" &&
+                uid.rfind("dev_M", 0) != 0 && uid.rfind("dev_B", 0) != 0) {
+                m_ignoredClients.insert(uid);
             }
         }
         if (it->second.deviceIdRef) {
@@ -468,6 +468,21 @@ std::string TcpReceiver::GetClientIp(int deviceId) {
     auto it = m_clients.find(deviceId);
     if (it != m_clients.end()) {
         return it->second.ip;
+    }
+    return "";
+}
+
+std::string TcpReceiver::GetLocalIpForClient(int deviceId) {
+    std::lock_guard<std::mutex> lock(m_clientsMutex);
+    auto it = m_clients.find(deviceId);
+    if (it != m_clients.end() && it->second.socket != INVALID_SOCKET) {
+        sockaddr_in localAddr{};
+        int addrLen = sizeof(localAddr);
+        if (getsockname(it->second.socket, (sockaddr*)&localAddr, &addrLen) == 0) {
+            char localIpStr[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(localAddr.sin_addr), localIpStr, INET_ADDRSTRLEN);
+            return std::string(localIpStr);
+        }
     }
     return "";
 }

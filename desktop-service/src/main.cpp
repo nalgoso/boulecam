@@ -6,6 +6,7 @@
 #include "usb/usbmuxd_client.h"
 #include "decoder/video_decoder.h"
 #include "audio/audio_output_manager.h"
+#include "audio/audio_dsp.h"
 #include <iostream>
 #include <fstream>
 #include <chrono>
@@ -101,18 +102,45 @@ int main(int argc, char* argv[]) {
     httpBridge.SetAudioOutputManager(&audioOutput);
     httpBridge.Start(BOULECAM_DEFAULT_WS_PORT); // Port 8090 for Desktop App GUI
 
-    // Wire up mic mute/gain commands to SHM so the virtual-camera DLL applies them in real-time
+    // Wire up mic mute/gain/mode commands to SHM and DSP engine
+    std::mutex audioDspMutex;
+    std::map<int, std::unique_ptr<AudioDspProcessor>> audioDspMap;
+
     httpBridge.SetMicMuteCallback([&shmProducers](int deviceId, bool muted) {
         auto it = shmProducers.find(deviceId);
         if (it != shmProducers.end() && it->second) {
             it->second->SetAudioMuted(muted);
         }
     });
-    httpBridge.SetMicGainCallback([&shmProducers](int deviceId, float gainDb) {
+    httpBridge.SetMicGainCallback([&shmProducers, &audioDspMap, &audioDspMutex](int deviceId, float gainDb) {
         auto it = shmProducers.find(deviceId);
         if (it != shmProducers.end() && it->second) {
             it->second->SetAudioGainDb(gainDb);
         }
+        std::lock_guard<std::mutex> lock(audioDspMutex);
+        auto& dsp = audioDspMap[deviceId];
+        if (dsp) {
+            dsp->SetUserGainDb(gainDb);
+        }
+    });
+    httpBridge.SetAudioModeCallback([&audioDspMap, &audioDspMutex, &tcpReceiver](int deviceId, bool isAmbient) {
+        {
+            std::lock_guard<std::mutex> lock(audioDspMutex);
+            auto& dsp = audioDspMap[deviceId];
+            if (!dsp) {
+                dsp = std::make_unique<AudioDspProcessor>();
+            }
+            dsp->SetAmbientMode(isAmbient);
+        }
+        std::cout << "[Audio DSP] Device " << deviceId << " modo: "
+                  << (isAmbient ? "AMBIENTE CONGREGACION (HPF Low-Cut 220Hz + -16dB)" : "PRINCIPAL (Respuesta Plana)") << std::endl;
+
+        BouleCamCameraCmd cmd{};
+        cmd.magic = BOULECAM_MAGIC;
+        cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+        cmd.action = 13; // BOULECAM_ACTION_SET_AUDIO_MODE
+        cmd.int_param1 = isAmbient ? 1 : 0;
+        tcpReceiver.SendCameraCommand(cmd, deviceId);
     });
 
     // Multi-Device decoders and statistics
@@ -132,13 +160,12 @@ int main(int argc, char* argv[]) {
     }
 
     httpBridge.SetRescanCallback([&adbManager, &httpBridge, &discoveryBeacon, &tcpReceiver]() {
-        std::cout << "[Service] Rescan triggered. Refreshing USB ADB reverse forwarding, clearing locks and sending Wi-Fi beacons..." << std::endl;
+        std::cout << "[Service] Rescan triggered. Refreshing USB ADB reverse forwarding, clearing ignored clients and triggering discovery sweep..." << std::endl;
         if (AdbManager::IsAdbInstalled()) {
             bool usbOk = AdbManager::ExecuteAdbReverse(BOULECAM_DEFAULT_TCP_PORT, BOULECAM_DEFAULT_TCP_PORT);
             httpBridge.SetUsbStatus(usbOk);
         }
         tcpReceiver.ClearIgnoredClients();
-        tcpReceiver.ClearAllSlotLocks();
         discoveryBeacon.TriggerBroadcast();
     });
 
@@ -234,9 +261,10 @@ int main(int argc, char* argv[]) {
             }
             httpBridge.SetDeviceMetadata(deviceId, deviceName, handshake.width, handshake.height, clientIp, isUsb, uniqueId);
 
-            // Inform mobile client of PC's primary Wi-Fi IPv4 address so it can switch or reconnect seamlessly
-            std::string pcWifiIp = "";
-            {
+            // For USB clients, inform mobile client of PC's primary Wi-Fi IPv4 address as a fallback.
+            // Never force Wi-Fi clients to switch hosts when they are already actively connected.
+            if (isUsb) {
+                std::string pcWifiIp = "";
                 auto status = httpBridge.GetStatus();
                 for (const auto& ip : status.localIps) {
                     if (ip != "127.0.0.1" && ip.find("169.254.") != 0) {
@@ -244,17 +272,17 @@ int main(int argc, char* argv[]) {
                         break;
                     }
                 }
-            }
-            if (!pcWifiIp.empty()) {
-                BouleCamCameraCmd cmd{};
-                cmd.magic = BOULECAM_MAGIC;
-                cmd.action = BOULECAM_ACTION_SET_CONN_MODE;
-                cmd.int_param1 = isUsb ? 1 : 0;
-                in_addr addr{};
-                inet_pton(AF_INET, pcWifiIp.c_str(), &addr);
-                cmd.long_param1 = static_cast<int64_t>(static_cast<uint32_t>(addr.s_addr));
-                cmd.float_param1 = isUsb ? 1.0f : 0.0f;
-                tcpReceiver.SendCameraCommand(cmd, deviceId);
+                if (!pcWifiIp.empty()) {
+                    BouleCamCameraCmd cmd{};
+                    cmd.magic = BOULECAM_MAGIC;
+                    cmd.action = BOULECAM_ACTION_SET_CONN_MODE;
+                    cmd.int_param1 = 1; // USB
+                    in_addr addr{};
+                    inet_pton(AF_INET, pcWifiIp.c_str(), &addr);
+                    cmd.long_param1 = static_cast<int64_t>(static_cast<uint32_t>(addr.s_addr));
+                    cmd.float_param1 = 1.0f;
+                    tcpReceiver.SendCameraCommand(cmd, deviceId);
+                }
             }
         },
         [&httpBridge](int deviceId, const BouleCamCameraState& state) {
@@ -281,17 +309,32 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    tcpReceiver.SetAudioCallback([&shmProducers, &httpBridge, &audioOutput](
+    tcpReceiver.SetAudioCallback([&shmProducers, &httpBridge, &audioOutput, &audioDspMap, &audioDspMutex](
         int deviceId, const BouleCamAudioHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
-        // Write raw PCM into the per-device SHM; virtual-camera DLL applies mute/gain in real-time
+        
+        // Mutable buffer for real-time church DSP (High-Pass Filter + Ambient level conditioning)
+        std::vector<uint8_t> pcmData(payloadData, payloadData + payloadSize);
+        {
+            std::lock_guard<std::mutex> lock(audioDspMutex);
+            auto& dsp = audioDspMap[deviceId];
+            if (!dsp) {
+                dsp = std::make_unique<AudioDspProcessor>();
+            }
+            dsp->ProcessPcm16(reinterpret_cast<int16_t*>(pcmData.data()),
+                              payloadSize / sizeof(int16_t),
+                              header.sample_rate,
+                              header.channels);
+        }
+
+        // Write processed PCM into per-device SHM; virtual-camera DLL applies mute/gain in real-time
         auto it = shmProducers.find(deviceId);
         if (it != shmProducers.end() && it->second) {
-            it->second->WriteAudio(payloadData, payloadSize, header.sample_rate, header.channels);
+            it->second->WriteAudio(pcmData.data(), payloadSize, header.sample_rate, header.channels);
         }
-        // Push to native Windows audio output device
-        audioOutput.WriteAudio(payloadData, payloadSize);
+        // Push to native Windows audio output device (Virtual Cable)
+        audioOutput.WriteAudio(pcmData.data(), payloadSize);
         // Level metering for UI
-        httpBridge.PushAudioData(deviceId, payloadData, payloadSize);
+        httpBridge.PushAudioData(deviceId, pcmData.data(), payloadSize);
     });
 
     std::cout << "\n[Ready] BouleCam Desktop Service running. Waiting for mobile camera feed..." << std::endl;

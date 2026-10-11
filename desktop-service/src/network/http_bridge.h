@@ -37,6 +37,7 @@ struct DeviceInfo {
     int audioLevel = 0;
     bool isMicMuted = false;
     float micGainDb = 0.0f; // Microphone gain in dB (-40..+20)
+    bool isAmbientMic = false; // Ambient mic mode (HPF 220Hz + -16dB attenuation)
 };
 
 struct SystemStatus {
@@ -56,6 +57,7 @@ struct SystemStatus {
     float latencyMs = 0.0f;
     uint32_t bitrateKbps = 0;
     int audioLevel = 0;
+    bool isAmbientMic = false;
     std::vector<std::string> localIps;
 };
 
@@ -87,8 +89,10 @@ public:
     // propagate them to the correct ShmProducer instance.
     using MicMuteCallback = std::function<void(int deviceId, bool muted)>;
     using MicGainCallback = std::function<void(int deviceId, float gainDb)>;
+    using AudioModeCallback = std::function<void(int deviceId, bool isAmbient)>;
     void SetMicMuteCallback(MicMuteCallback cb) { m_micMuteCallback = cb; }
     void SetMicGainCallback(MicGainCallback cb) { m_micGainCallback = cb; }
+    void SetAudioModeCallback(AudioModeCallback cb) { m_audioModeCallback = cb; }
 
     void UpdateDecodedFrame(int deviceId, const uint8_t* pDecodedData, uint32_t dataSize, uint32_t width, uint32_t height, BouleCamPixelFormat pixelFormat, uint16_t rotation = 0);
 
@@ -103,6 +107,8 @@ public:
     void PushAudioData(int deviceId, const uint8_t* pcmData, uint32_t size);
     void SetMicMute(int deviceId, bool muted);
     void SetMicGain(int deviceId, float gainDb); // -40..+20 dB
+    void SetAudioMode(int deviceId, bool isAmbient);
+    bool IsAmbientMode(int deviceId) const;
 
     void SetAudioOutputManager(class AudioOutputManager* pMgr) { m_pAudioOutput = pMgr; }
     class AudioOutputManager* GetAudioOutputManager() const { return m_pAudioOutput; }
@@ -128,7 +134,7 @@ private:
 
     std::atomic<int> m_activeDeviceId{1};
 
-    std::mutex m_statusMutex;
+    mutable std::mutex m_statusMutex;
     SystemStatus m_status;
     std::map<int, DeviceInfo> m_devices;
 
@@ -145,6 +151,7 @@ private:
     class AudioOutputManager* m_pAudioOutput = nullptr;
     MicMuteCallback m_micMuteCallback;
     MicGainCallback m_micGainCallback;
+    AudioModeCallback m_audioModeCallback;
 };
 
 } // namespace boulecam

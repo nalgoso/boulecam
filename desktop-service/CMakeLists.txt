@@ -28,6 +28,7 @@ set(SOURCES
     src/usb/usbmuxd_client.cpp
     src/decoder/video_decoder.cpp
     src/audio/audio_output_manager.cpp
+    src/audio/audio_dsp.cpp
 )
 
 add_executable(boulecam-desktop ${SOURCES})

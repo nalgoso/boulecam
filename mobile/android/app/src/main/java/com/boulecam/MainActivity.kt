@@ -772,12 +772,10 @@ class MainActivity : AppCompatActivity() {
         )
         sender?.onConnectionFailed = { failedHost, failures ->
             runOnUiThread {
-                if (failures >= 2 && sender?.isConnected() == false) {
-                    if (failedHost != "127.0.0.1" && isUsbCableConnected) {
-                        // Wi-Fi unreachable or failing, but USB cable is plugged: auto fallback to USB!
-                        setConnectionMode(usb = true, showToast = false)
-                    } else if (failedHost == "127.0.0.1" && !lastWifiHost.isNullOrEmpty()) {
-                        // USB disconnected / failing: auto fallback to Wi-Fi!
+                if (failures >= 3 && sender?.isConnected() == false) {
+                    // Only fallback from USB to Wi-Fi if USB is failing and a Wi-Fi host is known.
+                    // Never force Wi-Fi to jump into USB mode just because a charging cable is plugged in!
+                    if (isUsbMode && failedHost == "127.0.0.1" && !lastWifiHost.isNullOrEmpty()) {
                         setConnectionMode(usb = false, showToast = false)
                     }
                 }
@@ -829,7 +827,7 @@ class MainActivity : AppCompatActivity() {
 
         // 3.5. Prepare Ultra Low Latency PCM Audio Pipeline (Starts only when connected)
         audioPipeline = AudioCapturePipeline(sampleRate = 48000) { pcmData, size ->
-            if (sender?.isConnected() == true) {
+            if (sender?.isConnected() == true && isMicEnabled) {
                 sender?.sendAudio(pcmData, size)
             }
         }
@@ -954,12 +952,23 @@ class MainActivity : AppCompatActivity() {
                             getSharedPreferences("boulecam_prefs", MODE_PRIVATE).edit().putString("last_wifi_host", wifiIp).apply()
                         }
                     }
-                    setConnectionMode(wantUsb)
+                    if (wantUsb != isUsbMode || sender?.isConnected() != true) {
+                        setConnectionMode(wantUsb)
+                    }
                 }
                 12 -> { // BOULECAM_ACTION_SET_MIRROR (0 = Default, 1 = Inverted)
                     manualMirror = cmd.intParam1 != 0
                     updateMirrorButtonUI()
                     updatePreviewTransform()
+                }
+                13 -> { // BOULECAM_ACTION_SET_AUDIO_MODE (0 = Main, 1 = Ambient)
+                    val wantAmbient = cmd.intParam1 != 0
+                    audioPipeline?.setAmbientMode(wantAmbient)
+                    Toast.makeText(
+                        this,
+                        if (wantAmbient) "Micrófono: Ambiente de Congregación" else "Micrófono: Principal",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }

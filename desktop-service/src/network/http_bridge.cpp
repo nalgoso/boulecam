@@ -809,11 +809,12 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         return;
     }
 
-    // 0.75 Mic status endpoint — returns mute state, gain, and current peak level
+    // 0.75 Mic status endpoint — returns mute state, gain, peak level, and ambient mode
     if (firstLine.find("GET /api/mic/status") != std::string::npos) {
         bool muted = false;
         float gainDb = 0.0f;
         int level = 0;
+        bool isAmbient = false;
         {
             std::lock_guard<std::mutex> lock(m_statusMutex);
             auto it = m_devices.find(requestedCamId);
@@ -821,12 +822,17 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                 muted  = it->second.isMicMuted;
                 gainDb = it->second.micGainDb;
                 level  = it->second.audioLevel;
+                isAmbient = it->second.isAmbientMic;
+            } else {
+                isAmbient = m_status.isAmbientMic;
             }
         }
         std::ostringstream body;
         body << "{\"muted\":" << (muted ? "true" : "false")
              << ",\"gainDb\":" << gainDb
-             << ",\"level\":" << level << "}";
+             << ",\"level\":" << level
+             << ",\"isAmbient\":" << (isAmbient ? "true" : "false")
+             << ",\"mode\":\"" << (isAmbient ? "ambient" : "main") << "\"}";
         std::string bodyStr = body.str();
         std::ostringstream oss;
         oss << "HTTP/1.1 200 OK\r\n"
@@ -868,6 +874,52 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         SetMicGain(requestedCamId, gainDb);
 
         std::string body = "{\"status\":\"ok\",\"gainDb\":" + std::to_string(gainDb) + "}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
+    // 0.77 Set / Query mic mode (Ambient vs Main): POST /api/mic/mode?cam=X&mode=ambient
+    if (firstLine.find("/api/mic/mode") != std::string::npos) {
+        auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
+            size_t pos = src.find(key + "=");
+            if (pos == std::string::npos) return "";
+            pos += key.size() + 1;
+            size_t end = src.find_first_of("& \r\n", pos);
+            return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
+        };
+
+        std::string modeStr = parseParam(firstLine, "mode");
+        if (modeStr.empty()) modeStr = parseParam(requestStr, "mode");
+
+        bool isAmbient = false;
+        if (!modeStr.empty()) {
+            if (modeStr == "ambient" || modeStr == "1" || modeStr == "true") {
+                isAmbient = true;
+            }
+            SetAudioMode(requestedCamId, isAmbient);
+
+            // Send command to mobile phone as well
+            BouleCamCameraCmd cmd{};
+            cmd.magic = BOULECAM_MAGIC;
+            cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+            cmd.action = 13; // BOULECAM_ACTION_SET_AUDIO_MODE
+            cmd.int_param1 = isAmbient ? 1 : 0;
+            m_receiver.SendCameraCommand(cmd, requestedCamId);
+        } else {
+            isAmbient = IsAmbientMode(requestedCamId);
+        }
+
+        std::string body = "{\"status\":\"ok\",\"isAmbient\":" + std::string(isAmbient ? "true" : "false") +
+                           ",\"mode\":\"" + std::string(isAmbient ? "ambient" : "main") + "\"}";
         std::ostringstream oss;
         oss << "HTTP/1.1 200 OK\r\n"
             << "Content-Type: application/json\r\n"
@@ -1051,7 +1103,8 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                  << "\"fps\":" << m_status.fps << ","
                  << "\"latencyMs\":" << m_status.latencyMs << ","
                  << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
-                 << "\"audioLevel\":" << m_status.audioLevel;
+                 << "\"audioLevel\":" << m_status.audioLevel << ","
+                 << "\"isAmbientMic\":" << (m_status.isAmbientMic ? "true" : "false");
 
             if (m_pAudioOutput) {
                 json << ",\"audio\":{"
@@ -1096,6 +1149,9 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
                      << "\"latencyMs\":" << d.latencyMs << ","
                      << "\"bitrateKbps\":" << d.bitrateKbps << ","
                      << "\"audioLevel\":" << d.audioLevel << ","
+                     << "\"isAmbientMic\":" << (d.isAmbientMic ? "true" : "false") << ","
+                     << "\"micGainDb\":" << d.micGainDb << ","
+                     << "\"isMicMuted\":" << (d.isMicMuted ? "true" : "false") << ","
                      << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
                      << "}";
                 if (++idx < allDevs.size()) json << ",";
@@ -1126,32 +1182,6 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         return;
     }
 
-    // 2.2 Instant Audio Level API (/api/audio_level, /api/audio_level?cam=X)
-    if (firstLine.find("GET /api/audio_level") != std::string::npos) {
-        int lvl = 0;
-        {
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            if (m_devices.find(requestedCamId) != m_devices.end()) {
-                lvl = m_devices[requestedCamId].audioLevel;
-                m_devices[requestedCamId].audioLevel = static_cast<int>(lvl * 0.65f);
-            } else {
-                lvl = m_status.audioLevel;
-                m_status.audioLevel = static_cast<int>(lvl * 0.65f);
-            }
-        }
-        std::string body = "{\"level\":" + std::to_string(lvl) + "}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
 
     // 2.5 Audio Configuration API (/api/audio_config)
     if (firstLine.find("/api/audio_config") != std::string::npos) {
@@ -1457,6 +1487,9 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
             if (ok && action == 10) {
                 SetDeviceDimState(targetDevId, intParam != 0);
             }
+            if (ok && action == 13) {
+                SetAudioMode(targetDevId, intParam == 1);
+            }
 
             std::string respBody = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"failed\"}";
             std::ostringstream oss;
@@ -1545,6 +1578,30 @@ void HttpControlBridge::SetMicGain(int deviceId, float gainDb) {
     if (m_micGainCallback) {
         m_micGainCallback(deviceId, gainDb);
     }
+}
+
+void HttpControlBridge::SetAudioMode(int deviceId, bool isAmbient) {
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        if (m_devices.find(deviceId) != m_devices.end()) {
+            m_devices[deviceId].isAmbientMic = isAmbient;
+        }
+        if (deviceId == m_activeDeviceId.load() || m_devices.empty()) {
+            m_status.isAmbientMic = isAmbient;
+        }
+    }
+    if (m_audioModeCallback) {
+        m_audioModeCallback(deviceId, isAmbient);
+    }
+}
+
+bool HttpControlBridge::IsAmbientMode(int deviceId) const {
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    auto it = m_devices.find(deviceId);
+    if (it != m_devices.end()) {
+        return it->second.isAmbientMic;
+    }
+    return m_status.isAmbientMic;
 }
 
 } // namespace boulecam

@@ -54,7 +54,8 @@ typedef enum BouleCamCameraAction {
     BOULECAM_ACTION_REQUEST_KEYFRAME= 9, // Request IDR Sync Frame
     BOULECAM_ACTION_SET_DIM_SCREEN  = 10, // 0 = Normal brightness, 1 = Dim screen (Power saving)
     BOULECAM_ACTION_SET_CONN_MODE   = 11, // 0 = Wi-Fi, 1 = USB Cable
-    BOULECAM_ACTION_SET_MIRROR      = 12  // 0 = Default, 1 = Inverted Mirror
+    BOULECAM_ACTION_SET_MIRROR      = 12, // 0 = Default, 1 = Inverted Mirror
+    BOULECAM_ACTION_SET_AUDIO_MODE  = 13  // 0 = Micrófono Principal (Full spectrum), 1 = Micrófono Ambiente (Congregación / Low-Cut HPF + Atenuación)
 } BouleCamCameraAction;
 
 /**

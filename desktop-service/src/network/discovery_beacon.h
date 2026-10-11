@@ -22,10 +22,12 @@ public:
 private:
     void BeaconWorker();
     void ResponderWorker();
+    void SendDiscoveryProbes();
 
     uint16_t m_tcpPort;
     uint16_t m_udpPort;
     SOCKET m_udpSocket;
+    std::mutex m_socketMutex;
     std::atomic<bool> m_isRunning;
     std::string m_hostname;
 
