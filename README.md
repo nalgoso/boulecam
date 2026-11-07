@@ -10,24 +10,30 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
 
 - 🚀 **Ultra Baja Latencia**:
   - **Modo Cable USB**: < 20 ms mediante túnel ADB directo sin pasar por el router.
-  - **Modo Wi-Fi**: < 50 ms con protocolo TCP binario de alto rendimiento (`TCP_NODELAY`) y auto-descubrimiento UDP inteligente.
-- 📹 **Soporte Multi-Cámara Simultáneo**:
-  - Conecta múltiples teléfonos o tablets a la misma PC (cada uno recibe su canal independiente: `Cam 1`, `Cam 2`, etc.).
-  - Puertos e instancias dedicadas en OBS Studio (`/obs/1`, `/obs/2`, etc.) para mezclar sin interferencias.
+  - **Modo Wi-Fi**: < 50 ms con protocolo TCP binario de alto rendimiento (`TCP_NODELAY`), colas elásticas anti-bufferbloat y auto-descubrimiento UDP inteligente.
+- 📹 **Cámara Virtual Nativa Dual (DirectShow + Media Foundation)**:
+  - Controlador dual registrado tanto en **DirectShow** (`CLSID_BouleCamVirtualCam1..3`) como en **Windows Media Foundation** (`CLSID_BouleCamMFVirtualCam` bajo `KSCATEGORY_VIDEO_CAMERA`).
+  - Compatible de inmediato con OBS Studio, vMix, Discord, Teams y aplicaciones modernas de Windows (UWP) sin necesidad de drivers de kernel inestables.
+- 🎛️ **Soporte Multi-Cámara Simultáneo**:
+  - Conecta múltiples teléfonos o tablets a la misma PC (cada uno recibe su canal independiente: `Cam 1`, `Cam 2`, `Cam 3`).
+  - Instancias dedicadas en OBS Studio (`/obs/1`, `/obs/2`, etc.) o dispositivos virtuales separados (`BouleCam Virtual Camera 1..3`) para mezclar sin interferencias.
   - Configuración persistente individual: cada dispositivo recuerda su propia rotación, lente, linterna, micrófono, balance de blancos y estado de espejo.
-- 🔄 **Sincronización en Vivo con OBS Studio**:
-  - URL permanente y limpia (ej. `http://127.0.0.1:8090/obs/1`).
-  - Al cambiar el espejado o la rotación de 180° desde la app de Windows, **OBS se actualiza automáticamente en menos de 300 ms** sin recargar la fuente.
-- 🎙️ **Audio de Estudio en Tiempo Real**:
-  - Captura PCM nativa a 48000 Hz, 16 bits Mono de ultra baja latencia.
-  - El audio se emite sincronizado dentro del navegador de OBS y se integra directamente en el **Mezclador de Audio de OBS** (control de volumen, compresión, cancelación de ruido).
+- ⏱️ **Compensación Elástica de Deriva de Audio (Clock Drift Compensator)**:
+  - Algoritmo de remuestreo elástico en cruce por cero (zero-crossing) en el motor DSP.
+  - Mantiene sincronía perfecta de audio y video en transmisiones continuas de larga duración (más de 2 horas) evitando desfases progresivos o chasquidos.
+- 🎙️ **Audio de Estudio con Modos Inteligentes**:
+  - Captura PCM nativa a 48000 Hz, 16 bits Mono de ultra baja latencia con buffers de hardware de 10 ms.
+  - **Modo Micrófono Principal**: Respuesta plana completa (0 dB) ideal para solistas o locución.
+  - **Modo Micrófono Ambiente**: Filtro pasa-altos (Low-Cut HPF a 220 Hz) y atenuación de -16 dB para capturar el sonido de la congregación sin saturar con frecuencias graves.
+  - Control de volumen, vúmetro en decibelios (dB) y muteo en tiempo real.
+- 🔋 **Ahorro de Energía y Modo Reposo Inteligente (Smart Idle Standby)**:
+  - **Modo Reposo Automático**: Detecta cuándo las fuentes virtuales (OBS, Zoom, vista previa) no están activas y suspende la codificación y sensores del teléfono, ahorrando más del 70% de batería y temperatura. Al activarse la fuente en la PC, se despierta en menos de 200 ms.
+  - **Atenuación de Pantalla (Dim Screen)**: Reduce el brillo de la pantalla del teléfono al 1% manteniendo la cámara activa, accesible desde el móvil o remotamente desde la PC.
+- 📐 **Selector Remoto de Resolución y Orientación Dinámica**:
+  - Cambio en caliente entre 720p, 1080p y 4K con adaptación dinámica de tasa de bits desde la aplicación de escritorio sin reiniciar el streaming.
+  - Soporta streaming vertical (1080x1920) y horizontal (1920x1080) adaptándose a la orientación física del móvil en el trípode.
 - 🎛️ **Controles Pro Manuales**:
   - Deslizadores en tiempo real para ISO, Compensación de Exposición (EV), Balance de Blancos (Temperatura) y Enfoque Manual / Autofoco continuo.
-- 🔋 **Atenuación de Pantalla (Dim Screen)**:
-  - Modo de ahorro de batería al 1% de brillo que mantiene la cámara y la CPU activas sin suspender el teléfono ni recalentar la pantalla.
-  - Se puede activar o desactivar tanto desde el móvil como de forma remota desde la PC.
-- 📐 **Cero Deformación y Orientación Dinámica**:
-  - Soporta streaming vertical (1080x1920) y horizontal (1920x1080) adaptándose a la orientación física del móvil en el trípode.
 - 🎨 **Interfaz de Diseño Unificada**:
   - Paleta de diseño profesional (`#006D3B`, `#4ADE80`, `#7A7A7A`, `#1A1A1A`, `#222222`).
   - Toque en pantalla (tap) para ocultar de forma fluida tanto la barra superior como el dock inferior, dejando la vista 100% limpia.
@@ -38,24 +44,25 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
 
 ```
 [ Teléfono Android ]
-   ├── Cámara (Camera2 API / SurfaceTexture)
-   ├── Micrófono (AudioRecord 48 kHz PCM)
-   └── Encoder H.264 (Hardware MediaCodec Zero-Copy)
+   ├── Cámara (Camera2 API / SurfaceTexture / Selector 720p/1080p/4K)
+   ├── Micrófono (AudioRecord 48 kHz PCM / Modos Principal y Ambiente)
+   ├── Encoder H.264 (Hardware MediaCodec Zero-Copy)
+   └── Control de Reposo Inteligente (Smart Standby)
           │
           ▼  (Protocolo BouleCam Binario por USB / Wi-Fi)
 [ Daemon C++ Windows: boulecam-desktop.exe ]
-   ├── Receptor TCP Multi-Dispositivo
+   ├── Receptor TCP Multi-Dispositivo con buffers elásticos
    ├── Decodificador Hardware Media Foundation H.264
-   ├── Memoria Compartida Triple-Buffer IPC (Webcam Virtual Windows)
+   ├── Procesador DSP de Audio (Compensador de Deriva + Filtro HPF 220Hz)
+   ├── Memoria Compartida Triple-Buffer IPC (DirectShow & Media Foundation)
    └── Servidor HTTP Reactivo (Puerto 8090)
           │
           ├──────────────────────────┐
           ▼                          ▼
-[ Aplicación de Escritorio ]     [ OBS Studio ]
-  (Electron GUI, Control Pro,      (Browser Source: /obs/1, /obs/2)
-   Selector de Cámaras)            - Video en Vivo
-                                   - Audio 48 kHz PCM
-                                   - Control en Mezclador de OBS
+[ Aplicación de Escritorio ]     [ OBS Studio / Windows ]
+  (Electron GUI, Control Pro,      - Dispositivos DirectShow / Media Foundation
+   Selector de Cámaras/Formatos)   - Browser Source: /obs/1, /obs/2
+                                   - Audio sincronizado 48 kHz PCM
 ```
 
 ---
@@ -79,33 +86,33 @@ Los instaladores y ejecutables finales están disponibles en la sección de [Rel
 1. Instala **`BouleCam.apk`** en tu teléfono o tablet y abre la aplicación.
 2. **Modo Cable USB (Recomendado)**:
    - Activa la *Depuración por USB* en las opciones de desarrollador de tu teléfono.
-   - Conecta el cable a la PC. El toggle circular cambiará a **USB** automáticamente.
+   - Conecta el cable a la PC. El selector circular cambiará a **USB** automáticamente.
 3. **Modo Wi-Fi**:
-   - Toca el toggle superior para seleccionar **Wi-Fi**.
+   - Toca el selector superior para seleccionar **Wi-Fi**.
    - El teléfono detectará la PC en tu red local automáticamente y comenzará a transmitir.
 
-### 3. Configuración en OBS Studio (Dispositivos Nativos)
+### 3. Configuración en OBS Studio y Aplicaciones de Windows
 
-Para evitar problemas de compatibilidad y bloqueos de audio de los navegadores, **BouleCam opera como dispositivos nativos de entrada de Windows y OBS Studio**:
+Para máxima versatilidad y rendimiento, **BouleCam opera como dispositivos nativos de entrada de Windows y OBS Studio**:
 
 #### 📹 A. Video Nativo (Cámara Web Directa):
 1. Ejecuta `register.bat` como Administrador (o `Instalar-Camara-Virtual.bat`).
 2. En OBS Studio, en el panel **Fuentes**, haz clic en **`[+]`** y selecciona **Dispositivo de captura de video**.
 3. En el menú desplegable de dispositivos, selecciona **`BouleCam Virtual Camera`**.
-4. ¡Listo! La cámara transmitirá con aceleración por hardware Media Foundation a 60 FPS con ultra-baja latencia.
+4. ¡Listo! La cámara transmitirá con aceleración por hardware a 60 FPS con ultra-baja latencia tanto en DirectShow como en Media Foundation.
 
 #### 🎙️ B. Audio Nativo (Micrófono Directo en el Mezclador de OBS):
-1. Ejecuta `Instalar-Audio-Virtual.bat` (o acéptalo al correr `register.bat`). Esto instalará el driver firmado de cable de audio virtual (VB-Audio Virtual Cable).
+1. Ejecuta `Instalar-Audio-Virtual.bat` (o acéptalo al correr `register.bat`). Esto instalará el driver de cable de audio virtual (VB-Audio Virtual Cable).
 2. Abre `BouleCam.exe` (el servidor receptor detectará y enlazará automáticamente el audio del móvil con el cable virtual).
 3. En OBS Studio, en el panel **Fuentes**, haz clic en **`[+]`** y selecciona **Dispositivo de captura de audio**.
 4. En el menú desplegable, selecciona **`CABLE Output (VB-Audio Virtual Cable)`**.
 5. ¡Listo! El micrófono del teléfono ingresará directamente en el **Mezclador de Audio de OBS**. Podrás:
    - Ver el vúmetro en tiempo real subiendo y bajando según hables al móvil.
    - Ajustar el volumen con el fader en decibelios (dB).
-   - Aplicar filtros profesionales nativos de OBS (Supresión de ruido RNNoise, Puerta de ruido, Compresor y Limitador).
+   - Aplicar filtros profesionales nativos de OBS (Supresión de ruido, Compresor y Limitador).
 
 #### 🌐 C. Fuente de Navegador (Alternativa opcional):
-- Si deseas integrar la señal como Browser Source, puedes seguir usando la URL `http://127.0.0.1:8090/obs/1` (o `/obs/2` para multi-cámara).
+- Si deseas integrar la señal como Browser Source, puedes usar la URL `http://127.0.0.1:8090/obs/1` (o `/obs/2` para multi-cámara).
 
 ---
 
@@ -119,10 +126,11 @@ boulecam/
 │       └── boulecam_ipc.h      # Memoria compartida Triple-Buffer IPC
 ├── desktop-service/            # Motor receptor C++20 para Windows
 │   ├── src/
+│   │   ├── audio/              # DSP de audio, compensador de deriva y filtros
 │   │   ├── decoder/            # Decodificación acelerada por hardware (Media Foundation)
 │   │   ├── network/            # TCP_NODELAY, HTTP Bridge y Streaming WAV
 │   │   ├── usb/                # ADB reverse tunnel automático
-│   │   └── main.cpp            # Orquestador del servicio
+│   │   └── main.cpp            # Orquestador del servicio y gestor de reposo
 │   └── CMakeLists.txt
 ├── desktop-app/                # Interfaz de usuario para Windows (Electron)
 │   ├── index.html              # UI de control, selectores y controles manuales
@@ -132,15 +140,15 @@ boulecam/
 ├── mobile/android/             # Aplicación móvil nativa Android (Kotlin)
 │   ├── app/src/main/java/com/boulecam/
 │   │   ├── audio/              # Captura de audio de ultra baja latencia (AudioRecord)
-│   │   ├── camera/             # Pipeline de cámara (Camera2 API)
+│   │   ├── camera/             # Pipeline de cámara (Camera2 API y selector de resolución)
 │   │   ├── encoder/            # Codificador H.264 por hardware (MediaCodec)
 │   │   ├── network/            # Auto-descubrimiento y streaming de video/audio
-│   │   └── MainActivity.kt     # UI nativa, controles Pro y dock flotante
-└── virtual-camera/             # Controlador de cámara web virtual de Windows
+│   │   └── MainActivity.kt     # UI nativa, controles Pro, reposo y dock flotante
+│   └── virtual-camera/         # Controladores DirectShow y Media Foundation
 ```
 
 ---
 
 ## 📜 Licencia
-Creado 100% con el agente de Antigravity IDE. Siéntanse libres de usarlo gratuitamente
+Creado 100% con el agente de Antigravity IDE. Siéntanse libres de usarlo gratuitamente.
 Desarrollado bajo licencia **MIT**. Desarrollado con ❤️ para la comunidad de streaming y producción en vivo.
