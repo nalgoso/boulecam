@@ -1,6 +1,8 @@
 #include <windows.h>
 #include <dshow.h>
 #include "dshow_filter.h"
+#include "mf/class_factory.h"
+#include "mf/virtual_camera_source.h"
 #include <shlwapi.h>
 
 #pragma comment(lib, "strmiids.lib")
@@ -17,6 +19,11 @@ static const wchar_t* g_wszAudioCam2Clsid    = L"{6B47C021-85A4-4D6C-9A52-2A1E7F
 // Camera 3
 static const wchar_t* g_wszVideoCam3Clsid    = L"{6B47C012-85A4-4D6C-9A52-2A1E7F19D3B1}";
 static const wchar_t* g_wszAudioCam3Clsid    = L"{6B47C022-85A4-4D6C-9A52-2A1E7F19D3B1}";
+
+// Media Foundation Virtual Camera Source
+static const wchar_t* g_wszMFVideoCamClsid   = L"{6B47C030-85A4-4D6C-9A52-2A1E7F19D3B1}";
+static const wchar_t* g_wszMFVideoCamName    = L"BouleCam Virtual Camera (Media Foundation)";
+static const wchar_t* g_wszKSCategoryCamera  = L"{E5323777-F976-4f5b-9B55-B94699C46E44}"; // KSCATEGORY_VIDEO_CAMERA
 
 static const wchar_t* g_wszVideoCategory = L"{860BB310-5D01-11d0-BD3B-00A0C911CE86}"; // CLSID_VideoInputDeviceCategory
 static const wchar_t* g_wszAudioCategory = L"{33D9A762-90C8-11d0-BD43-00A0C911CE86}"; // CLSID_AudioInputDeviceCategory
@@ -130,6 +137,13 @@ extern "C" __declspec(dllexport) HRESULT STDAPICALLTYPE DllGetClassObject(REFCLS
         pFactory->Release();
         return hr;
     }
+    // Media Foundation Virtual Camera Source
+    else if (IsEqualCLSID(rclsid, boulecam::CLSID_BouleCamMFVirtualCam)) {
+        boulecam::VirtualCameraClassFactory* pFactory = new boulecam::VirtualCameraClassFactory();
+        HRESULT hr = pFactory->QueryInterface(riid, ppv);
+        pFactory->Release();
+        return hr;
+    }
 
     *ppv = nullptr;
     return CLASS_E_CLASSNOTAVAILABLE;
@@ -220,7 +234,7 @@ static void UnregisterDevice(HKEY rootKey, const wchar_t* clsidStr, const wchar_
     RegDeleteKeyW(rootKey, szKey);
 }
 
-// Helper to register all 3 cameras on a given root key
+// Helper to register all 3 cameras and Media Foundation virtual camera on a given root key
 static void RegisterAllCams(HKEY rootKey, const wchar_t* dllPath) {
     RegisterDevice(rootKey, g_wszVideoCam1Clsid, g_wszVideoCategory, g_wszVideoCam1Name, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
     RegisterDevice(rootKey, g_wszAudioCam1Clsid, g_wszAudioCategory, g_wszAudioCam1Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
@@ -228,6 +242,10 @@ static void RegisterAllCams(HKEY rootKey, const wchar_t* dllPath) {
     RegisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
     RegisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
     RegisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
+
+    // Media Foundation Virtual Camera Registration (UWP & Modern Windows Camera API)
+    RegisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
+    RegisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName, dllPath, nullptr, 0);
 }
 
 static void UnregisterAllCams(HKEY rootKey) {
@@ -237,6 +255,10 @@ static void UnregisterAllCams(HKEY rootKey) {
     UnregisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name);
     UnregisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name);
     UnregisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name);
+
+    // Media Foundation Virtual Camera Unregistration
+    UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName);
+    UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName);
 }
 
 extern "C" __declspec(dllexport) HRESULT STDAPICALLTYPE DllRegisterServer(void) {

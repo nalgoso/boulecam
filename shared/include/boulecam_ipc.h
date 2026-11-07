@@ -77,6 +77,9 @@ typedef struct BouleCamIpcHeader {
     // Audio control flags (written by desktop-service, read by virtual-camera DLL)
     uint32_t audio_muted;           // 1 = muted (send silence to OBS), 0 = active
     int32_t  audio_gain_db_x100;    // Gain in dB * 100 (e.g. +6 dB = 600, -12 dB = -1200, 0 = unity)
+
+    // Active readers counter (incremented by DirectShow/MediaFoundation Virtual Camera when open/streaming)
+    uint32_t active_readers_count;  // 0 = no apps reading, >0 = OBS/Zoom/Meet active
 } BouleCamIpcHeader;
 
 #pragma pack(pop)

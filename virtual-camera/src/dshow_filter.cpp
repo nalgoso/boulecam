@@ -805,11 +805,13 @@ STDMETHODIMP BouleCamVideoPin::SetSink(IQualityControl*) { return S_OK; }
 
 void BouleCamVideoPin::StartStreaming() {
     if (m_isStreaming.exchange(true)) return;
+    m_shmConsumer.IncrementActiveReaders();
     m_streamThread = std::thread(&BouleCamVideoPin::StreamingWorker, this);
 }
 
 void BouleCamVideoPin::StopStreaming() {
     if (!m_isStreaming.exchange(false)) return;
+    m_shmConsumer.DecrementActiveReaders();
     if (m_streamThread.joinable()) {
         m_streamThread.join();
     }

@@ -113,6 +113,9 @@ public:
     void SetAudioOutputManager(class AudioOutputManager* pMgr) { m_pAudioOutput = pMgr; }
     class AudioOutputManager* GetAudioOutputManager() const { return m_pAudioOutput; }
 
+    void RecordClientAccess(int deviceId);
+    bool IsDeviceActive(int deviceId, int timeoutSeconds = 15);
+
     int GetActiveDeviceId() const { return m_activeDeviceId.load(); }
     void SetActiveDeviceId(int id) { m_activeDeviceId.store(id); }
 
@@ -147,6 +150,9 @@ private:
 
     std::mutex m_audioMutex;
     std::map<int, std::vector<uint8_t>> m_audioBuffers;
+
+    std::mutex m_accessMutex;
+    std::map<int, std::chrono::steady_clock::time_point> m_lastClientAccess;
 
     class AudioOutputManager* m_pAudioOutput = nullptr;
     MicMuteCallback m_micMuteCallback;

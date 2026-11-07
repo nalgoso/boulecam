@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <chrono>
 
 namespace boulecam {
 
@@ -59,12 +60,46 @@ private:
 };
 
 /**
+ * Real-Time Clock Drift Compensator (Elastic Time-Stretching via Zero-Crossing Micro-Resampling)
+ * 
+ * Prevents A/V desynchronization and buffer overflow/underflow over multi-hour live streams
+ * (such as 2-4 hour church services) caused by differences between the mobile mic hardware clock
+ * and the PC playback / DirectShow / OBS audio clock.
+ * 
+ * Corrections are performed 100% inaudibly by inserting or dropping single samples at low-energy
+ * zero-crossings with linear interpolation, preserving pitch, phase, and 48 kHz studio fidelity.
+ */
+class ClockDriftCompensator {
+public:
+    ClockDriftCompensator() = default;
+
+    void Reset();
+
+    /**
+     * Compensate clock drift by dynamically micro-adjusting pcmBytes when necessary.
+     */
+    void Process(std::vector<uint8_t>& pcmBytes, uint32_t sampleRate, uint16_t channels);
+
+    double GetSmoothedDriftMs() const { return m_smoothedDriftMs.load(); }
+    uint64_t GetCorrectionsCount() const { return m_correctionsCount.load(); }
+
+private:
+    bool m_initialized = false;
+    std::chrono::steady_clock::time_point m_startTime{};
+    uint64_t m_totalFramesReceived = 0;
+    std::atomic<double> m_smoothedDriftMs{0.0};
+    std::atomic<uint64_t> m_correctionsCount{0};
+    std::chrono::steady_clock::time_point m_lastCorrectionTime{};
+};
+
+/**
  * Dedicated Church Audio DSP Processor
  * - Modo Principal: Flat response (unfiltered), full dynamic spectrum.
  * - Modo Ambiente (Congregación): High-Pass Filter (Low-Cut a 220 Hz) para eliminar
  *   retumbos de sala, rebote de subwoofers del PA y choque de fase/peine,
  *   junto con atenuación de ganancia ambiental de -16 dB para integrarse
  *   perfectamente con la consola principal sin opacarla.
+ * - Clock Drift Compensation integrado para sincronía de audio infinita.
  */
 class AudioDspProcessor {
 public:
@@ -77,7 +112,14 @@ public:
     void SetUserGainDb(float gainDb) { m_userGainDb.store(std::clamp(gainDb, -40.0f, 20.0f)); }
     float GetUserGainDb() const { return m_userGainDb.load(); }
 
+    void ResetClockDrift() { m_driftCompensator.Reset(); }
+    double GetClockDriftMs() const { return m_driftCompensator.GetSmoothedDriftMs(); }
+
+    // In-place processing (fixed buffer size)
     void ProcessPcm16(int16_t* samples, size_t sampleCount, uint32_t sampleRate, uint16_t channels);
+
+    // Vector-based processing with dynamic Clock Drift Compensation + HPF + Gain
+    void ProcessPcm16(std::vector<uint8_t>& pcmBuffer, uint32_t sampleRate, uint16_t channels);
 
 private:
     std::atomic<bool> m_isAmbient{false};
@@ -87,6 +129,7 @@ private:
     uint32_t m_configuredSampleRate = 0;
     BiquadFilter m_hpfL;
     BiquadFilter m_hpfR;
+    ClockDriftCompensator m_driftCompensator;
 };
 
 } // namespace boulecam

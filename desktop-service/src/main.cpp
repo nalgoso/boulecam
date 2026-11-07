@@ -74,7 +74,7 @@ int main(int argc, char* argv[]) {
     char appDataPath[MAX_PATH];
     if (GetEnvironmentVariableA("APPDATA", appDataPath, MAX_PATH) > 0) {
         std::string versionFile = std::string(appDataPath) + "\\BouleCam\\version.txt";
-        std::string currentVersion = "1.4.08";
+        std::string currentVersion = "1.4.11";
         std::string savedVersion = "";
         std::ifstream vf(versionFile);
         if (vf.is_open()) {
@@ -312,7 +312,7 @@ int main(int argc, char* argv[]) {
     tcpReceiver.SetAudioCallback([&shmProducers, &httpBridge, &audioOutput, &audioDspMap, &audioDspMutex](
         int deviceId, const BouleCamAudioHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
         
-        // Mutable buffer for real-time church DSP (High-Pass Filter + Ambient level conditioning)
+        // Mutable buffer for real-time church DSP (High-Pass Filter + Ambient level conditioning + Clock Drift Compensation)
         std::vector<uint8_t> pcmData(payloadData, payloadData + payloadSize);
         {
             std::lock_guard<std::mutex> lock(audioDspMutex);
@@ -320,21 +320,18 @@ int main(int argc, char* argv[]) {
             if (!dsp) {
                 dsp = std::make_unique<AudioDspProcessor>();
             }
-            dsp->ProcessPcm16(reinterpret_cast<int16_t*>(pcmData.data()),
-                              payloadSize / sizeof(int16_t),
-                              header.sample_rate,
-                              header.channels);
+            dsp->ProcessPcm16(pcmData, header.sample_rate, header.channels);
         }
 
         // Write processed PCM into per-device SHM; virtual-camera DLL applies mute/gain in real-time
         auto it = shmProducers.find(deviceId);
         if (it != shmProducers.end() && it->second) {
-            it->second->WriteAudio(pcmData.data(), payloadSize, header.sample_rate, header.channels);
+            it->second->WriteAudio(pcmData.data(), static_cast<uint32_t>(pcmData.size()), header.sample_rate, header.channels);
         }
         // Push to native Windows audio output device (Virtual Cable)
-        audioOutput.WriteAudio(pcmData.data(), payloadSize);
+        audioOutput.WriteAudio(pcmData.data(), static_cast<uint32_t>(pcmData.size()));
         // Level metering for UI
-        httpBridge.PushAudioData(deviceId, pcmData.data(), payloadSize);
+        httpBridge.PushAudioData(deviceId, pcmData.data(), static_cast<uint32_t>(pcmData.size()));
     });
 
     std::cout << "\n[Ready] BouleCam Desktop Service running. Waiting for mobile camera feed..." << std::endl;
@@ -343,8 +340,10 @@ int main(int argc, char* argv[]) {
     std::cout << "[Info] Native Audio Device: " << audioOutput.GetDeviceName() << std::endl;
     std::cout << "[Info] Press Ctrl+C to terminate.\n" << std::endl;
 
-    // Main status monitor loop (aggregates per-camera statistics)
+    // Main status monitor loop (aggregates per-camera statistics & manages idle standby)
     std::map<int, uint64_t> prevCounts;
+    std::map<int, int> deviceIdleSeconds;
+    std::map<int, bool> deviceStandby;
     while (g_keepRunning.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
@@ -374,6 +373,45 @@ int main(int argc, char* argv[]) {
                 double totalRealLatencyMs = netLatency + decLat;
 
                 httpBridge.UpdateStats(devId, static_cast<float>(fps), static_cast<float>(totalRealLatencyMs), realBitrateKbps);
+
+                // Smart Idle Standby Manager (Iriun-style power saving for mobile phones)
+                if (tcpReceiver.IsClientConnected(devId)) {
+                    bool isVcamActive = false;
+                    auto prodIt = shmProducers.find(devId);
+                    if (prodIt != shmProducers.end() && prodIt->second) {
+                        if (prodIt->second->GetActiveReadersCount() > 0) {
+                            isVcamActive = true;
+                        }
+                    }
+                    bool isHttpActive = httpBridge.IsDeviceActive(devId, 30);
+                    bool isInUse = isVcamActive || isHttpActive;
+
+                    if (isInUse) {
+                        deviceIdleSeconds[devId] = 0;
+                        if (deviceStandby[devId]) {
+                            deviceStandby[devId] = false;
+                            std::cout << "[PowerSave] Device " << devId << " is now in use (VirtualCam/OBS/HTTP). Waking from standby..." << std::endl;
+                            BouleCamCameraCmd wakeCmd{};
+                            wakeCmd.magic = BOULECAM_MAGIC;
+                            wakeCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+                            wakeCmd.action = BOULECAM_ACTION_SET_STANDBY; // 14
+                            wakeCmd.int_param1 = 0; // 0 = Active
+                            tcpReceiver.SendCameraCommand(wakeCmd, devId);
+                        }
+                    } else {
+                        deviceIdleSeconds[devId]++;
+                        if (deviceIdleSeconds[devId] >= 60 && !deviceStandby[devId]) {
+                            deviceStandby[devId] = true;
+                            std::cout << "[PowerSave] Device " << devId << " idle for >=60s without active consumers. Entering phone Standby (saving CPU & thermals)..." << std::endl;
+                            BouleCamCameraCmd standbyCmd{};
+                            standbyCmd.magic = BOULECAM_MAGIC;
+                            standbyCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+                            standbyCmd.action = BOULECAM_ACTION_SET_STANDBY; // 14
+                            standbyCmd.int_param1 = 1; // 1 = Standby
+                            tcpReceiver.SendCameraCommand(standbyCmd, devId);
+                        }
+                    }
+                }
             }
         }
     }

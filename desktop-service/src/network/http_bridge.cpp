@@ -631,6 +631,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
 
     // 0. OBS Studio Dedicated Stream per camera (/obs, /obs/1, /obs/2, /obs?cam=X)
     if (firstLine.find("GET /obs") != std::string::npos || firstLine.find("GET /stream") != std::string::npos) {
+        RecordClientAccess(requestedCamId);
         std::string camParamStr = std::to_string(requestedCamId);
         std::string html = 
             "<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -934,6 +935,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
     }
 
     if (firstLine.find("GET /api/audio_chunk") != std::string::npos || firstLine.find("GET /api/audio") != std::string::npos) {
+        RecordClientAccess(requestedCamId);
         std::vector<uint8_t> chunk;
         {
             std::lock_guard<std::mutex> lock(m_audioMutex);
@@ -972,6 +974,7 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
 
     // 1. Snapshot Live Video Feed endpoint (/api/snapshot, /api/snapshot?cam=X)
     if (firstLine.find("GET /api/snapshot") != std::string::npos) {
+        RecordClientAccess(requestedCamId);
         std::vector<uint8_t> frameData;
         {
             std::lock_guard<std::mutex> lock(m_frameMutex);
@@ -1410,6 +1413,53 @@ void HttpControlBridge::HandleClient(SOCKET clientSock) {
         return;
     }
 
+    // 3.9 Remote Resolution Selector API (/api/resolution?cam=X&w=1920&h=1080&fps=60)
+    if (firstLine.find("/api/resolution") != std::string::npos) {
+        auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
+            size_t pos = src.find(key + "=");
+            if (pos == std::string::npos) return "";
+            pos += key.size() + 1;
+            size_t end = src.find_first_of("& \r\n", pos);
+            return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
+        };
+
+        std::string wStr = parseParam(firstLine, "w");
+        if (wStr.empty()) wStr = parseParam(requestStr, "w");
+        std::string hStr = parseParam(firstLine, "h");
+        if (hStr.empty()) hStr = parseParam(requestStr, "h");
+        std::string fpsStr = parseParam(firstLine, "fps");
+        if (fpsStr.empty()) fpsStr = parseParam(requestStr, "fps");
+
+        int w = 1920, h = 1080, fps = 60;
+        if (!wStr.empty()) try { w = std::stoi(wStr); } catch (...) {}
+        if (!hStr.empty()) try { h = std::stoi(hStr); } catch (...) {}
+        if (!fpsStr.empty()) try { fps = std::stoi(fpsStr); } catch (...) {}
+
+        BouleCamCameraCmd cmd{};
+        cmd.magic = BOULECAM_MAGIC;
+        cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+        cmd.action = BOULECAM_ACTION_SET_RESOLUTION; // 15
+        cmd.int_param1 = w;
+        cmd.long_param1 = h;
+        cmd.float_param1 = static_cast<float>(fps);
+
+        bool ok = m_receiver.SendCameraCommand(cmd, requestedCamId);
+        if (!ok) ok = m_receiver.SendCameraCommand(cmd, 0);
+
+        std::string body = ok ? "{\"status\":\"ok\",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(h) + ",\"fps\":" + std::to_string(fps) + "}" : "{\"status\":\"error\"}";
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: application/json\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Access-Control-Allow-Origin: *\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+        std::string resp = oss.str();
+        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
+        closesocket(clientSock);
+        return;
+    }
+
     // 4. Command API (/api/command)
     if (firstLine.find("POST /api/command") != std::string::npos) {
         size_t bodyPos = requestStr.find("\r\n\r\n");
@@ -1602,6 +1652,22 @@ bool HttpControlBridge::IsAmbientMode(int deviceId) const {
         return it->second.isAmbientMic;
     }
     return m_status.isAmbientMic;
+}
+
+void HttpControlBridge::RecordClientAccess(int deviceId) {
+    std::lock_guard<std::mutex> lock(m_accessMutex);
+    m_lastClientAccess[deviceId] = std::chrono::steady_clock::now();
+}
+
+bool HttpControlBridge::IsDeviceActive(int deviceId, int timeoutSeconds) {
+    std::lock_guard<std::mutex> lock(m_accessMutex);
+    auto it = m_lastClientAccess.find(deviceId);
+    if (it == m_lastClientAccess.end()) {
+        return false;
+    }
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - it->second).count();
+    return elapsed < timeoutSeconds;
 }
 
 } // namespace boulecam

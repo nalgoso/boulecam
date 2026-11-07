@@ -35,6 +35,11 @@ class StreamSender(
     private val isRunning = AtomicBoolean(false)
     private var sequenceNumber = 0L
 
+    // Flow Control & Anti-Bufferbloat state
+    private val lastAckedSequence = java.util.concurrent.atomic.AtomicLong(0L)
+    private val isCongestionReported = AtomicBoolean(false)
+    private var droppedFramesCount = 0L
+
     fun isConnected(): Boolean = isConnected.get()
 
     // Capacity 4: enough to buffer a couple of frames without stalling while still dropping stale ones
@@ -103,13 +108,15 @@ class StreamSender(
     fun sendFrame(isKeyFrame: Boolean, timestampUs: Long, naluData: ByteArray, rotation: Int = 0) {
         if (!isConnected.get()) return
 
+        val currentSeq = sequenceNumber++
+
         // Build exact 24-byte BouleCamFrameHeader (no padding)
         val headerBuffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
         headerBuffer.putInt(0x4243414D) // Magic "BCAM" (4 bytes)
         headerBuffer.put(0x10.toByte())  // BOULECAM_PKT_FRAME_DATA (1 byte)
         headerBuffer.put((if (isKeyFrame) 1 else 0).toByte()) // (1 byte)
         headerBuffer.putShort(rotation.toShort()) // (2 bytes)
-        headerBuffer.putInt((sequenceNumber++).toInt()) // (4 bytes)
+        headerBuffer.putInt(currentSeq.toInt()) // (4 bytes)
         headerBuffer.putLong(timestampUs) // (8 bytes)
         headerBuffer.putInt(naluData.size) // (4 bytes)
 
@@ -251,38 +258,51 @@ class StreamSender(
 
     private fun readIncomingCommands(sock: Socket) {
         val inStream = inputStream ?: return
-        val cmdBuffer = ByteArray(22) // BouleCamCameraCmd: 4 + 1 + 1 + 4 + 8 + 4 = 22 bytes
+        val header5 = ByteArray(5) // 4 bytes Magic (BCAM) + 1 byte PacketType
 
         while (isRunning.get() && isConnected.get() && !sock.isClosed) {
             try {
-                var total = 0
-                while (total < 22 && isConnected.get()) {
-                    val r = inStream.read(cmdBuffer, total, 22 - total)
-                    if (r < 0) {
-                        Log.i(TAG, "Socket closed by remote server (EOF). Disconnecting client.")
-                        try { sock.close() } catch (ignored: Exception) {}
-                        if (isConnected.getAndSet(false)) {
-                            onConnectionStateChanged(false)
-                        }
-                        return
+                if (!readExact(inStream, header5, 0, 5)) {
+                    Log.i(TAG, "Socket closed by remote server (EOF). Disconnecting client.")
+                    try { sock.close() } catch (ignored: Exception) {}
+                    if (isConnected.getAndSet(false)) {
+                        onConnectionStateChanged(false)
                     }
-                    total += r
+                    return
                 }
 
-                if (total == 22) {
-                    val buf = ByteBuffer.wrap(cmdBuffer).order(ByteOrder.LITTLE_ENDIAN)
-                    val magic = buf.getInt()
-                    val type = buf.get()
-                    if (magic == 0x4243414D && type == 0x30.toByte()) { // BOULECAM_PKT_CAMERA_CMD
-                        val action = buf.get().toInt() and 0xFF
-                        val intParam1 = buf.getInt()
-                        val longParam1 = buf.getLong()
-                        val floatParam1 = buf.getFloat()
+                val hdrBuf = ByteBuffer.wrap(header5).order(ByteOrder.LITTLE_ENDIAN)
+                val magic = hdrBuf.getInt()
+                val type = hdrBuf.get().toInt() and 0xFF
 
-                        onCommandReceived?.invoke(
-                            CameraCommand(action, intParam1, longParam1, floatParam1)
-                        )
-                    }
+                if (magic != 0x4243414D) {
+                    continue
+                }
+
+                if (type == 0x30) { // BOULECAM_PKT_CAMERA_CMD (22 bytes total, 17 remaining)
+                    val payload = ByteArray(17)
+                    if (!readExact(inStream, payload, 0, 17)) break
+                    val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+                    val action = buf.get().toInt() and 0xFF
+                    val intParam1 = buf.getInt()
+                    val longParam1 = buf.getLong()
+                    val floatParam1 = buf.getFloat()
+
+                    onCommandReceived?.invoke(
+                        CameraCommand(action, intParam1, longParam1, floatParam1)
+                    )
+                } else if (type == 0x12) { // BOULECAM_PKT_FRAME_ACK (24 bytes total, 19 remaining)
+                    val payload = ByteArray(19)
+                    if (!readExact(inStream, payload, 0, 19)) break
+                    val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+                    val statusFlags = buf.get().toInt() and 0xFF
+                    val reserved = buf.getShort()
+                    val lastSeqAcked = buf.getInt().toLong() and 0xFFFFFFFFL
+                    val ackTsUs = buf.getLong()
+                    val queueDepthMs = buf.getInt()
+
+                    lastAckedSequence.set(lastSeqAcked)
+                    isCongestionReported.set((statusFlags and 1 != 0) || (queueDepthMs > 50))
                 }
             } catch (e: java.net.SocketTimeoutException) {
                 continue
@@ -295,6 +315,16 @@ class StreamSender(
                 break
             }
         }
+    }
+
+    private fun readExact(inStream: InputStream, buffer: ByteArray, offset: Int, length: Int): Boolean {
+        var total = 0
+        while (total < length && isConnected.get()) {
+            val r = inStream.read(buffer, offset + total, length - total)
+            if (r < 0) return false
+            total += r
+        }
+        return total == length
     }
 
     private fun performHandshake(): Boolean {

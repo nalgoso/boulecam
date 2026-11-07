@@ -37,6 +37,10 @@ DEFINE_GUID(CLSID_BouleCamVirtualCam3,
 DEFINE_GUID(CLSID_BouleCamAudioSource3,
     0x6b47c022, 0x85a4, 0x4d6c, 0x9a, 0x52, 0x2a, 0x1e, 0x7f, 0x19, 0xd3, 0xb1);
 
+// Media Foundation Virtual Camera Source: {6B47C030-85A4-4D6C-9A52-2A1E7F19D3B1}
+DEFINE_GUID(CLSID_BouleCamMFVirtualCam,
+    0x6b47c030, 0x85a4, 0x4d6c, 0x9a, 0x52, 0x2a, 0x1e, 0x7f, 0x19, 0xd3, 0xb1);
+
 // Forward declarations
 class BouleCamVideoFilter;
 class BouleCamVideoPin;

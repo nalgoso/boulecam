@@ -14,6 +14,9 @@ set(DLL_SOURCES
     src/dllmain.cpp
     src/dshow_filter.cpp
     src/ipc/shm_consumer.cpp
+    src/mf/class_factory.cpp
+    src/mf/media_stream.cpp
+    src/mf/virtual_camera_source.cpp
 )
 
 add_library(boulecam-vcam SHARED ${DLL_SOURCES})
@@ -26,6 +29,8 @@ target_link_libraries(boulecam-vcam PRIVATE
     oleaut32
     uuid
     shlwapi
+    mfplat
+    mfuuid
 )
 
 # 2. Registration CLI Tool

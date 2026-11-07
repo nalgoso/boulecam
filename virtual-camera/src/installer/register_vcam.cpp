@@ -46,7 +46,7 @@ int main(int argc, char* argv[]) {
 
         HRESULT hr = pRegister();
         if (SUCCEEDED(hr)) {
-            std::cout << "[Success] BouleCam Virtual Camera & Audio successfully registered in DirectShow!" << std::endl;
+            std::cout << "[Success] BouleCam Virtual Camera & Audio successfully registered in DirectShow and Media Foundation!" << std::endl;
             FreeLibrary(hDll);
             return 0;
         } else {

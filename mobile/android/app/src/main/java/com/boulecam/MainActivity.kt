@@ -970,6 +970,62 @@ class MainActivity : AppCompatActivity() {
                         Toast.LENGTH_SHORT
                     ).show()
                 }
+                14 -> { // BOULECAM_ACTION_SET_STANDBY (0 = Active, 1 = Standby)
+                    val enterStandby = cmd.intParam1 != 0
+                    if (enterStandby) {
+                        encoder?.setSuspended(true)
+                        audioPipeline?.stop()
+                        statusTextView?.text = "STATUS: EN REPOSO (STANDBY) \u2022 AHORRO CPU"
+                        statusTextView?.setTextColor(COLOR_GRAY)
+                        fpsTextView?.text = "En espera de OBS / Windows"
+                        dimScreenOverlay?.visibility = View.VISIBLE
+                    } else {
+                        encoder?.setSuspended(false)
+                        encoder?.requestKeyFrame()
+                        if (isMicEnabled) audioPipeline?.start()
+                        val modeLabel = if (isUsbMode) "Cable USB" else "WiFi"
+                        statusTextView?.text = "STATUS: EN VIVO \u2022 $modeLabel"
+                        statusTextView?.setTextColor(COLOR_LIGHT_GREEN)
+                        dimScreenOverlay?.visibility = if (isDimScreenActive) View.VISIBLE else View.GONE
+                    }
+                }
+                15 -> { // BOULECAM_ACTION_SET_RESOLUTION (intParam1=width, longParam1=height, floatParam1=fps)
+                    val newWidth = cmd.intParam1
+                    val newHeight = cmd.longParam1.toInt()
+                    val newFps = if (cmd.floatParam1 > 0f) cmd.floatParam1.toInt() else 60
+                    changeResolution(newWidth, newHeight, newFps)
+                }
+            }
+        }
+    }
+
+    private fun changeResolution(newWidth: Int, newHeight: Int, newFps: Int) {
+        if (newWidth <= 0 || newHeight <= 0) return
+        val newBitrate = when {
+            newWidth >= 3840 -> 20_000_000 // 4K 20 Mbps
+            newWidth >= 1920 -> 8_000_000  // 1080p 8 Mbps
+            else -> 4_000_000              // 720p 4 Mbps
+        }
+
+        cameraExecutor.execute {
+            try {
+                encoder?.stop()
+                encoder = HardwareEncoder(newWidth, newHeight, newFps, newBitrate) { isKeyFrame, timestampUs, naluData ->
+                    if (sender?.isConnected() == true) {
+                        sender?.sendFrame(isKeyFrame, timestampUs, naluData, physicalOrientationDegrees)
+                    }
+                }
+                encoder?.start()
+                val newSurface = encoder?.inputSurface ?: return@execute
+
+                cameraPipeline?.updateEncoderSurface(newSurface, android.util.Size(newWidth, newHeight), newFps)
+                encoder?.requestKeyFrame()
+
+                runOnUiThread {
+                    Toast.makeText(this, "Resolución remota: ${newWidth}x${newHeight} @ ${newFps}fps", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }

@@ -31,6 +31,7 @@ typedef enum BouleCamPacketType {
     BOULECAM_PKT_HANDSHAKE_RESP = 0x02,
     BOULECAM_PKT_FRAME_DATA     = 0x10,
     BOULECAM_PKT_FRAME_SPS_PPS  = 0x11,
+    BOULECAM_PKT_FRAME_ACK      = 0x12, // Desktop -> Mobile (Flow control & Anti-Bufferbloat)
     BOULECAM_PKT_PING           = 0x20,
     BOULECAM_PKT_PONG           = 0x21,
     BOULECAM_PKT_CAMERA_CMD     = 0x30, // Desktop -> Mobile (Control settings)
@@ -55,7 +56,9 @@ typedef enum BouleCamCameraAction {
     BOULECAM_ACTION_SET_DIM_SCREEN  = 10, // 0 = Normal brightness, 1 = Dim screen (Power saving)
     BOULECAM_ACTION_SET_CONN_MODE   = 11, // 0 = Wi-Fi, 1 = USB Cable
     BOULECAM_ACTION_SET_MIRROR      = 12, // 0 = Default, 1 = Inverted Mirror
-    BOULECAM_ACTION_SET_AUDIO_MODE  = 13  // 0 = Micrófono Principal (Full spectrum), 1 = Micrófono Ambiente (Congregación / Low-Cut HPF + Atenuación)
+    BOULECAM_ACTION_SET_AUDIO_MODE  = 13, // 0 = Micrófono Principal (Full spectrum), 1 = Micrófono Ambiente (Congregación / Low-Cut HPF + Atenuación)
+    BOULECAM_ACTION_SET_STANDBY     = 14, // 0 = Active, 1 = Standby / Deep Idle (Pauses camera sensor & encoder)
+    BOULECAM_ACTION_SET_RESOLUTION  = 15  // int_param1 = width, long_param1 = height, float_param1 = fps
 } BouleCamCameraAction;
 
 /**
@@ -100,6 +103,20 @@ typedef struct BouleCamFrameHeader {
     uint64_t capture_timestamp_us; // Hardware capture timestamp in microseconds
     uint32_t payload_size;      // Size of the raw H.264/H.265 Annex-B byte stream following
 } BouleCamFrameHeader;
+
+/**
+ * Video Frame ACK for Flow Control & Anti-Bufferbloat (Desktop -> Mobile)
+ * Exact total packet size: 24 bytes (4 + 1 + 1 + 2 + 4 + 8 + 4)
+ */
+typedef struct BouleCamFrameAck {
+    uint32_t magic;             // BOULECAM_MAGIC (0x4243414D)
+    uint8_t  packet_type;       // BOULECAM_PKT_FRAME_ACK (0x12)
+    uint8_t  status_flags;      // Bit 0: Congestion detected (request selective P-frame drop)
+    uint16_t reserved;          // Alignment padding
+    uint32_t last_seq_acked;    // Monotonically increasing frame index acknowledged
+    uint64_t ack_timestamp_us;  // Desktop reception timestamp in microseconds
+    uint32_t queue_depth_ms;    // Processing/queue backlog in milliseconds
+} BouleCamFrameAck;
 
 /**
  * Low-overhead Audio Packet Header (Precedes raw PCM 16-bit audio payload)

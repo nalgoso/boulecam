@@ -22,6 +22,10 @@ class CameraCapturePipeline(
     private var captureSession: CameraCaptureSession? = null
     private var currentRequestBuilder: CaptureRequest.Builder? = null
 
+    private var currentEncoderSurface: Surface = encoderSurface
+    private var currentTargetResolution: Size = targetResolution
+    private var currentTargetFps: Int = targetFps
+
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
@@ -77,6 +81,23 @@ class CameraCapturePipeline(
         }
     }
 
+    fun updateEncoderSurface(newSurface: Surface, newTargetResolution: Size, newFps: Int) {
+        currentEncoderSurface = newSurface
+        currentTargetResolution = newTargetResolution
+        currentTargetFps = newFps
+        recreateCaptureSession()
+    }
+
+    private fun recreateCaptureSession() {
+        val cameraId = getCameraId(currentLensFacing) ?: return
+        try {
+            captureSession?.stopRepeating()
+            captureSession?.close()
+            captureSession = null
+        } catch (ignored: Exception) {}
+        createCaptureSession(cameraId)
+    }
+
     private fun reopenCamera() {
         try {
             captureSession?.stopRepeating()
@@ -117,7 +138,7 @@ class CameraCapturePipeline(
 
     private fun createCaptureSession(cameraId: String) {
         val device = cameraDevice ?: return
-        val surfaces = mutableListOf<Surface>(encoderSurface)
+        val surfaces = mutableListOf<Surface>(currentEncoderSurface)
         if (previewSurface != null && previewSurface.isValid) {
             surfaces.add(previewSurface)
         }
@@ -126,7 +147,7 @@ class CameraCapturePipeline(
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
             val fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
             
-            val bestFpsRange = fpsRanges.find { it.upper >= targetFps } 
+            val bestFpsRange = fpsRanges.find { it.upper >= currentTargetFps } 
                 ?: fpsRanges.maxByOrNull { it.upper } 
                 ?: Range(30, 30)
 
@@ -135,7 +156,7 @@ class CameraCapturePipeline(
                     captureSession = session
                     try {
                         val requestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                            addTarget(encoderSurface)
+                            addTarget(currentEncoderSurface)
                             if (previewSurface != null && previewSurface.isValid) {
                                 addTarget(previewSurface)
                             }

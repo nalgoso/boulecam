@@ -40,6 +40,19 @@ public:
     bool IsConnected() const { return m_pIpcHeader != nullptr; }
     bool IsStreamingActive() const;
 
+    // Active readers tracking for Smart Idle Standby
+    void IncrementActiveReaders() {
+        if (m_pIpcHeader) {
+            InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pIpcHeader->active_readers_count));
+        }
+    }
+
+    void DecrementActiveReaders() {
+        if (m_pIpcHeader && m_pIpcHeader->active_readers_count > 0) {
+            InterlockedDecrement(reinterpret_cast<volatile LONG*>(&m_pIpcHeader->active_readers_count));
+        }
+    }
+
     // Audio control accessors (read from SHM flags set by desktop-service)
     bool  IsAudioMuted() const;
     float GetAudioGainDb() const;

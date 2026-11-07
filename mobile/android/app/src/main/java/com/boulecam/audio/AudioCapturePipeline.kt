@@ -44,41 +44,47 @@ class AudioCapturePipeline(
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val audioFormat = AudioFormat.ENCODING_PCM_16BIT
         val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        val bufferSize = maxOf(minBufSize, 4096)
+        // Optimal low-latency buffer size: double the minimal hardware burst size
+        val bufferSize = maxOf(minBufSize, 1920)
 
         var record: AudioRecord? = null
 
-        if (ambient) {
-            // Ambient / Congregation mode: try UNPROCESSED (raw, disables AGC & aggressive compression)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                try {
-                    record = AudioRecord(
-                        MediaRecorder.AudioSource.UNPROCESSED,
-                        sampleRate,
-                        channelConfig,
-                        audioFormat,
-                        bufferSize
-                    )
-                } catch (ignored: Exception) {}
+        val audioSource = when {
+            ambient -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    MediaRecorder.AudioSource.UNPROCESSED
+                } else {
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION
+                }
             }
-            if (record?.state != AudioRecord.STATE_INITIALIZED) {
-                record?.release()
-                // Fallback to VOICE_RECOGNITION (also disables AGC on most phones)
-                try {
-                    record = AudioRecord(
-                        MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                        sampleRate,
-                        channelConfig,
-                        audioFormat,
-                        bufferSize
-                    )
-                } catch (ignored: Exception) {}
+            else -> MediaRecorder.AudioSource.CAMCORDER
+        }
+
+        // Low-latency AudioRecord Builder for Android 8.0+ (API 26+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val format = AudioFormat.Builder()
+                    .setEncoding(audioFormat)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelConfig)
+                    .build()
+
+                record = AudioRecord.Builder()
+                    .setAudioSource(audioSource)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(bufferSize)
+                    .build()
+            } catch (e: Exception) {
+                Log.w(TAG, "AudioRecord.Builder fallback: ${e.message}")
             }
-        } else {
-            // Main mic mode: CAMCORDER (optimized for speech and video recording)
+        }
+
+        // Fallback for standard instantiation if Builder or specific source is not available
+        if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+            record?.release()
             try {
                 record = AudioRecord(
-                    MediaRecorder.AudioSource.CAMCORDER,
+                    audioSource,
                     sampleRate,
                     channelConfig,
                     audioFormat,
@@ -118,7 +124,7 @@ class AudioCapturePipeline(
 
             try {
                 audioRecord?.startRecording()
-                Log.i(TAG, "AudioRecord started: $sampleRate Hz, Mono, 16-bit PCM (Ambient=$isAmbientMode)")
+                Log.i(TAG, "Ultra-low-latency AudioRecord active: $sampleRate Hz, Mono, 16-bit PCM (Ambient=$isAmbientMode)")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start AudioRecord", e)
                 isRunning.set(false)
@@ -127,17 +133,22 @@ class AudioCapturePipeline(
         }
 
         workerThread = Thread({
-            // 20 ms chunks: 48000 samples/sec * 2 bytes/sample * 0.02s = 1920 bytes
-            val chunkSizeBytes = 1920
+            // 10 ms ultra-low latency chunks: 48000 samples/sec * 2 bytes/sample * 0.010s = 960 bytes
+            val chunkSizeBytes = 960
             val buffer = ByteArray(chunkSizeBytes)
 
             while (isRunning.get()) {
-                val record = synchronized(recordLock) { audioRecord }
-                val readBytes = record?.read(buffer, 0, chunkSizeBytes) ?: -1
+                val record = synchronized(recordLock) { audioRecord } ?: break
+                val readBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    record.read(buffer, 0, chunkSizeBytes, AudioRecord.READ_BLOCKING)
+                } else {
+                    record.read(buffer, 0, chunkSizeBytes)
+                }
+
                 if (readBytes > 0) {
                     onAudioChunk(buffer, readBytes)
                 } else if (readBytes < 0) {
-                    try { Thread.sleep(10) } catch (ignored: InterruptedException) { break }
+                    try { Thread.sleep(5) } catch (ignored: InterruptedException) { break }
                 }
             }
         }, "BouleCamAudioCapture").apply {
