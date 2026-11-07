@@ -93,6 +93,12 @@ function prepareBinaries() {
         if (!fs.existsSync(permanentBin)) {
             fs.mkdirSync(permanentBin, { recursive: true });
         }
+        // Ensure background processes are terminated so new version files can overwrite cleanly
+        try {
+            const { execSync } = require('child_process');
+            execSync('taskkill /F /IM boulecam-desktop.exe >nul 2>&1');
+        } catch (ignored) {}
+
         const filesToCopy = ['boulecam-desktop.exe', 'boulecam-vcam.dll', 'register_vcam.exe'];
         for (const file of filesToCopy) {
             const src = path.join(binDir, file);
@@ -344,8 +350,32 @@ function autoRegisterVirtualCamera() {
     const regExe = path.join(targetDir, 'register_vcam.exe');
 
     const cleanDuplicateKeys = () => {
-        exec('reg delete "HKCU\\Software\\Classes\\CLSID\\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\\Instance\\BouleCam Virtual Camera" /f', () => {});
-        exec('reg delete "HKCU\\Software\\Classes\\CLSID\\{33D9A762-90C8-11d0-BD43-00A0C911CE86}\\Instance\\BouleCam Audio" /f', () => {});
+        const hives = ['HKCU', 'HKLM'];
+        const vCat = '{860BB310-5D01-11d0-BD3B-00A0C911CE86}';
+        const aCat = '{33D9A762-90C8-11d0-BD43-00A0C911CE86}';
+
+        const staleVideo = [
+            'BouleCam Virtual Camera',
+            'BouleCam Virtual Camera 2',
+            'BouleCam Virtual Camera 3',
+            'BouleCam Virtual Camera (Media Foundation)',
+            'DirectShow Softcam',
+            '{6B47C011-85A4-4D6C-9A52-2A1E7F19D3B1}',
+            '{6B47C012-85A4-4D6C-9A52-2A1E7F19D3B1}',
+            '{6B47C030-85A4-4D6C-9A52-2A1E7F19D3B1}'
+        ];
+        const staleAudio = [
+            'BouleCam Audio',
+            'BouleCam Audio 2',
+            'BouleCam Audio 3',
+            '{6B47C021-85A4-4D6C-9A52-2A1E7F19D3B1}',
+            '{6B47C022-85A4-4D6C-9A52-2A1E7F19D3B1}'
+        ];
+
+        hives.forEach(h => {
+            staleVideo.forEach(inst => exec(`reg delete "${h}\\Software\\Classes\\CLSID\\${vCat}\\Instance\\${inst}" /f`, () => {}));
+            staleAudio.forEach(inst => exec(`reg delete "${h}\\Software\\Classes\\CLSID\\${aCat}\\Instance\\${inst}" /f`, () => {}));
+        });
     };
 
     cleanDuplicateKeys();

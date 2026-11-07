@@ -5,6 +5,7 @@ import android.content.Context
 import android.hardware.camera2.*
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
@@ -81,6 +82,32 @@ class CameraCapturePipeline(
         }
     }
 
+    companion object {
+        private const val TAG = "CameraCapturePipeline"
+    }
+
+    fun setTargetFps(newFps: Int) {
+        currentTargetFps = newFps
+        val cameraId = getCameraId(currentLensFacing) ?: return
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
+        val bestFpsRange = fpsRanges.filter { it.upper.toInt() == currentTargetFps }
+            .maxByOrNull { it.lower.toInt() }
+            ?: fpsRanges.filter { it.upper.toInt() >= currentTargetFps }.maxByOrNull { it.upper.toInt() }
+            ?: fpsRanges.maxByOrNull { it.upper.toInt() }
+            ?: Range(30, 30)
+
+        currentRequestBuilder?.let { builder ->
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFpsRange)
+            try {
+                captureSession?.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                Log.i(TAG, "Updated live camera FPS range to $bestFpsRange without session restart")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error updating repeating request with new FPS range: ${e.message}")
+            }
+        }
+    }
+
     fun updateEncoderSurface(newSurface: Surface, newTargetResolution: Size, newFps: Int) {
         currentEncoderSurface = newSurface
         currentTargetResolution = newTargetResolution
@@ -147,10 +174,10 @@ class CameraCapturePipeline(
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
             val fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
             
-            val bestFpsRange = fpsRanges.filter { it.upper == currentTargetFps }
-                .maxByOrNull { it.lower }
-                ?: fpsRanges.filter { it.upper >= currentTargetFps }.maxByOrNull { it.upper }
-                ?: fpsRanges.maxByOrNull { it.upper }
+            val bestFpsRange = fpsRanges.filter { it.upper.toInt() == currentTargetFps }
+                .maxByOrNull { it.lower.toInt() }
+                ?: fpsRanges.filter { it.upper.toInt() >= currentTargetFps }.maxByOrNull { it.upper.toInt() }
+                ?: fpsRanges.maxByOrNull { it.upper.toInt() }
                 ?: Range(30, 30)
 
             device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {

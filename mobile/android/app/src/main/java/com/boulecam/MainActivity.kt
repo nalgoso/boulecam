@@ -999,8 +999,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var currentConfiguredWidth = 1920
+    private var currentConfiguredHeight = 1080
+    private var currentConfiguredFps = 60
+
     private fun changeResolution(newWidth: Int, newHeight: Int, newFps: Int) {
         if (newWidth <= 0 || newHeight <= 0) return
+
+        // Case 1: ONLY FPS changed (or same resolution) -> Instant zero-interruption hot-switch!
+        if (newWidth == currentConfiguredWidth && newHeight == currentConfiguredHeight) {
+            currentConfiguredFps = newFps
+            cameraExecutor.execute {
+                cameraPipeline?.setTargetFps(newFps)
+                encoder?.requestKeyFrame()
+                runOnUiThread {
+                    Toast.makeText(this, "⚡ Tasa de cuadros: $newFps FPS", Toast.LENGTH_SHORT).show()
+                }
+            }
+            return
+        }
+
+        // Case 2: Resolution changed -> Graceful teardown order
+        currentConfiguredWidth = newWidth
+        currentConfiguredHeight = newHeight
+        currentConfiguredFps = newFps
+
         val newBitrate = when {
             newWidth >= 3840 -> 20_000_000 // 4K 20 Mbps
             newWidth >= 1920 -> 8_000_000  // 1080p 8 Mbps
@@ -1009,6 +1032,9 @@ class MainActivity : AppCompatActivity() {
 
         cameraExecutor.execute {
             try {
+                // Gracefully stop camera first so it's not pushing frames into a dead surface
+                cameraPipeline?.stop()
+
                 encoder?.stop()
                 encoder = HardwareEncoder(newWidth, newHeight, newFps, newBitrate) { isKeyFrame, timestampUs, naluData ->
                     if (sender?.isConnected() == true) {
@@ -1018,11 +1044,11 @@ class MainActivity : AppCompatActivity() {
                 encoder?.start()
                 val newSurface = encoder?.inputSurface ?: return@execute
 
-                cameraPipeline?.updateEncoderSurface(newSurface, android.util.Size(newWidth, newHeight), newFps)
+                startCameraPipeline()
                 encoder?.requestKeyFrame()
 
                 runOnUiThread {
-                    Toast.makeText(this, "Resolución remota: ${newWidth}x${newHeight} @ ${newFps}fps", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Resolución: ${newWidth}x${newHeight} @ ${newFps}fps", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
