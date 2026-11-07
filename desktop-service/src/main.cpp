@@ -133,7 +133,7 @@ int main(int argc, char* argv[]) {
             dsp->SetAmbientMode(isAmbient);
         }
         std::cout << "[Audio DSP] Device " << deviceId << " modo: "
-                  << (isAmbient ? "AMBIENTE CONGREGACION (HPF Low-Cut 220Hz + -16dB)" : "PRINCIPAL (Respuesta Plana)") << std::endl;
+                  << (isAmbient ? "AMBIENTE CONGREGACION (HPF Low-Cut 80Hz + -3dB)" : "PRINCIPAL (Respuesta Plana)") << std::endl;
 
         BouleCamCameraCmd cmd{};
         cmd.magic = BOULECAM_MAGIC;
@@ -340,10 +340,8 @@ int main(int argc, char* argv[]) {
     std::cout << "[Info] Native Audio Device: " << audioOutput.GetDeviceName() << std::endl;
     std::cout << "[Info] Press Ctrl+C to terminate.\n" << std::endl;
 
-    // Main status monitor loop (aggregates per-camera statistics & manages idle standby)
+    // Main status monitor loop (aggregates per-camera statistics)
     std::map<int, uint64_t> prevCounts;
-    std::map<int, int> deviceIdleSeconds;
-    std::map<int, bool> deviceStandby;
     while (g_keepRunning.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
@@ -373,45 +371,6 @@ int main(int argc, char* argv[]) {
                 double totalRealLatencyMs = netLatency + decLat;
 
                 httpBridge.UpdateStats(devId, static_cast<float>(fps), static_cast<float>(totalRealLatencyMs), realBitrateKbps);
-
-                // Smart Idle Standby Manager (Iriun-style power saving for mobile phones)
-                if (tcpReceiver.IsClientConnected(devId)) {
-                    bool isVcamActive = false;
-                    auto prodIt = shmProducers.find(devId);
-                    if (prodIt != shmProducers.end() && prodIt->second) {
-                        if (prodIt->second->GetActiveReadersCount() > 0) {
-                            isVcamActive = true;
-                        }
-                    }
-                    bool isHttpActive = httpBridge.IsDeviceActive(devId, 30);
-                    bool isInUse = isVcamActive || isHttpActive;
-
-                    if (isInUse) {
-                        deviceIdleSeconds[devId] = 0;
-                        if (deviceStandby[devId]) {
-                            deviceStandby[devId] = false;
-                            std::cout << "[PowerSave] Device " << devId << " is now in use (VirtualCam/OBS/HTTP). Waking from standby..." << std::endl;
-                            BouleCamCameraCmd wakeCmd{};
-                            wakeCmd.magic = BOULECAM_MAGIC;
-                            wakeCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
-                            wakeCmd.action = BOULECAM_ACTION_SET_STANDBY; // 14
-                            wakeCmd.int_param1 = 0; // 0 = Active
-                            tcpReceiver.SendCameraCommand(wakeCmd, devId);
-                        }
-                    } else {
-                        deviceIdleSeconds[devId]++;
-                        if (deviceIdleSeconds[devId] >= 60 && !deviceStandby[devId]) {
-                            deviceStandby[devId] = true;
-                            std::cout << "[PowerSave] Device " << devId << " idle for >=60s without active consumers. Entering phone Standby (saving CPU & thermals)..." << std::endl;
-                            BouleCamCameraCmd standbyCmd{};
-                            standbyCmd.magic = BOULECAM_MAGIC;
-                            standbyCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
-                            standbyCmd.action = BOULECAM_ACTION_SET_STANDBY; // 14
-                            standbyCmd.int_param1 = 1; // 1 = Standby
-                            tcpReceiver.SendCameraCommand(standbyCmd, devId);
-                        }
-                    }
-                }
             }
         }
     }

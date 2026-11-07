@@ -191,15 +191,15 @@ void AudioDspProcessor::ProcessPcm16(int16_t* samples, size_t sampleCount, uint3
     // Reconfigure high-pass filter if sample rate changed
     if (sampleRate != m_configuredSampleRate) {
         m_configuredSampleRate = sampleRate;
-        // 220 Hz Butterworth High-Pass: eliminates subwoofers, kick drum bleed and room rumble
-        m_hpfL.ConfigureHighPass(static_cast<float>(sampleRate), 220.0f);
-        m_hpfR.ConfigureHighPass(static_cast<float>(sampleRate), 220.0f);
+        // 80 Hz Butterworth High-Pass: eliminates HVAC, stage rumble and handling noise without cutting vocal body
+        m_hpfL.ConfigureHighPass(static_cast<float>(sampleRate), 80.0f);
+        m_hpfR.ConfigureHighPass(static_cast<float>(sampleRate), 80.0f);
     }
 
-    // Baseline attenuation for ambient mic (-16 dB) so congregation mic sits behind the console
+    // Gentle baseline attenuation for ambient mic (-3 dB) to prevent clipping while keeping natural level
     float totalDb = userGain;
     if (isAmbient) {
-        totalDb -= 16.0f;
+        totalDb -= 3.0f;
     }
 
     float linearGain = std::pow(10.0f, totalDb / 20.0f);

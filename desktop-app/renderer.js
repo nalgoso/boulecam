@@ -105,7 +105,7 @@ async function setMicAmbientMode(wantAmbient) {
     await fetch(`${API_BASE}/api/mic/mode?cam=${activeCamId}&mode=${wantAmbient ? 'ambient' : 'main'}`, { method: 'POST' });
   } catch (err) {}
   showToast(wantAmbient
-    ? '🏛️ Modo Micrófono Ambiente activado (Filtro Low-Cut 220Hz)'
+    ? '🏛️ Modo Micrófono Ambiente activado (Filtro Low-Cut 80Hz)'
     : '🎙️ Modo Micrófono Principal activado (Respuesta Plana)'
   );
 }
@@ -192,6 +192,34 @@ const badgeLatency = document.getElementById('badge-latency');
 const badgeBitrate = document.getElementById('badge-bitrate');
 const badgeDevice = document.getElementById('badge-device');
 const badgeMode = document.getElementById('badge-mode');
+
+let currentTargetFps = parseInt(localStorage.getItem('boulecam_target_fps') || '60', 10);
+let currentTargetRes = localStorage.getItem('boulecam_target_res') || '1920x1080';
+
+async function setResolutionAndFps(resStr, fpsVal) {
+  currentTargetRes = resStr || currentTargetRes;
+  currentTargetFps = fpsVal || currentTargetFps;
+  localStorage.setItem('boulecam_target_fps', currentTargetFps.toString());
+  localStorage.setItem('boulecam_target_res', currentTargetRes);
+
+  const [wStr, hStr] = currentTargetRes.split('x');
+  const w = parseInt(wStr || '1920', 10);
+  const h = parseInt(hStr || '1080', 10);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/resolution?cam=${activeCamId}&w=${w}&h=${h}&fps=${currentTargetFps}`, { method: 'POST' });
+    if (res.ok) {
+      showToast(`⚡ Tasa de cuadros configurada a ${currentTargetFps} FPS (${w}x${h})`);
+    }
+  } catch (e) {
+    console.error('Error changing resolution/fps:', e);
+  }
+
+  const fpsSelect = document.getElementById('settings-fps-select');
+  if (fpsSelect) fpsSelect.value = currentTargetFps.toString();
+  const resSelect = document.getElementById('settings-res-select');
+  if (resSelect) resSelect.value = currentTargetRes;
+}
 
 // Floating Dock Buttons
 const btnFlip = document.getElementById('btn-flip');
@@ -418,9 +446,31 @@ function setupModals() {
       updateObsBox(activeCamId);
       const tAudio = document.getElementById('toggle-audio');
       if (tAudio) tAudio.checked = isMicEnabled;
+
+      const fpsSelect = document.getElementById('settings-fps-select');
+      if (fpsSelect) fpsSelect.value = currentTargetFps.toString();
+      const resSelect = document.getElementById('settings-res-select');
+      if (resSelect) resSelect.value = currentTargetRes;
+
       modalSettings.style.display = 'flex';
     }
   };
+
+  const fpsSelect = document.getElementById('settings-fps-select');
+  if (fpsSelect) {
+    fpsSelect.addEventListener('change', (e) => {
+      const val = parseInt(e.target.value, 10);
+      setResolutionAndFps(currentTargetRes, val);
+    });
+  }
+
+  const resSelect = document.getElementById('settings-res-select');
+  if (resSelect) {
+    resSelect.addEventListener('change', (e) => {
+      const val = e.target.value;
+      setResolutionAndFps(val, currentTargetFps);
+    });
+  }
 
   const closeSettingsModal = () => {
     if (modalSettings) modalSettings.style.display = 'none';
@@ -1157,6 +1207,14 @@ function setupEvents() {
         await sendCommand(11, 0);
       }
       setTimeout(pollStatus, 400);
+    });
+  }
+
+  // FPS Badge Click: Quick Toggle between 30 and 60 FPS
+  if (badgeFps) {
+    badgeFps.addEventListener('click', () => {
+      const nextFps = (currentTargetFps === 60) ? 30 : 60;
+      setResolutionAndFps(currentTargetRes, nextFps);
     });
   }
 

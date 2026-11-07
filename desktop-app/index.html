@@ -76,7 +76,7 @@
         <!-- Minimalist Status Overlay on Top of Livefeed -->
         <div class="monitor-overlay-top">
           <span class="badge-tag" id="badge-resolution">1080p</span>
-          <span class="badge-tag" id="badge-fps">-- FPS</span>
+          <span class="badge-tag" id="badge-fps" style="cursor:pointer;" title="Clic para alternar entre 30 FPS y 60 FPS">-- FPS</span>
           <span class="badge-tag" id="badge-latency" style="color:var(--accent-green);">-- ms</span>
           <span class="badge-tag" id="badge-bitrate">-- Kbps</span>
           <span class="badge-tag" id="badge-battery" style="display:none; align-items:center; gap:4px;">
@@ -293,7 +293,7 @@
           <div class="settings-toggle-row">
             <div class="settings-toggle-info">
               <span class="settings-toggle-name">Micrófono Ambiente (Congregación)</span>
-              <span class="settings-toggle-hint" id="settings-audio-mode-hint">Filtro Low-Cut 220Hz para mezclar con consola</span>
+              <span class="settings-toggle-hint" id="settings-audio-mode-hint">Filtro Low-Cut 80Hz para mezclar con consola</span>
             </div>
             <label class="switch">
               <input type="checkbox" id="toggle-audio-ambient-mode">
@@ -316,6 +316,34 @@
               </div>
               <span class="sliding-toggle-label label-wifi">WIFI</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Sección de Calidad y Cuadros por Segundo (FPS) -->
+        <div class="settings-group">
+          <div class="settings-group-title">🎞️ Calidad y Tasa de Cuadros</div>
+          
+          <div class="settings-toggle-row">
+            <div class="settings-toggle-info">
+              <span class="settings-toggle-name">Tasa de Cuadros (Framerate)</span>
+              <span class="settings-toggle-hint">Alternar entre 30 FPS estándar y 60 FPS fluido</span>
+            </div>
+            <select id="settings-fps-select" class="modal-select" style="width:110px; padding:6px 10px; background:#1e1e1e; color:#fff; border:1px solid #333; border-radius:6px; cursor:pointer;">
+              <option value="60">60 FPS</option>
+              <option value="30">30 FPS</option>
+            </select>
+          </div>
+
+          <div class="settings-toggle-row" style="margin-top:10px;">
+            <div class="settings-toggle-info">
+              <span class="settings-toggle-name">Resolución de Captura</span>
+              <span class="settings-toggle-hint">Resolución del sensor de la cámara</span>
+            </div>
+            <select id="settings-res-select" class="modal-select" style="width:130px; padding:6px 10px; background:#1e1e1e; color:#fff; border:1px solid #333; border-radius:6px; cursor:pointer;">
+              <option value="1920x1080">1080p FHD</option>
+              <option value="1280x720">720p HD</option>
+              <option value="3840x2160">4K UHD</option>
+            </select>
           </div>
         </div>
 

@@ -147,8 +147,10 @@ class CameraCapturePipeline(
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
             val fpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
             
-            val bestFpsRange = fpsRanges.find { it.upper >= currentTargetFps } 
-                ?: fpsRanges.maxByOrNull { it.upper } 
+            val bestFpsRange = fpsRanges.filter { it.upper == currentTargetFps }
+                .maxByOrNull { it.lower }
+                ?: fpsRanges.filter { it.upper >= currentTargetFps }.maxByOrNull { it.upper }
+                ?: fpsRanges.maxByOrNull { it.upper }
                 ?: Range(30, 30)
 
             device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {

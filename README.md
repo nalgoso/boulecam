@@ -11,26 +11,27 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
 - 🚀 **Ultra Baja Latencia**:
   - **Modo Cable USB**: < 20 ms mediante túnel ADB directo sin pasar por el router.
   - **Modo Wi-Fi**: < 50 ms con protocolo TCP binario de alto rendimiento (`TCP_NODELAY`), colas elásticas anti-bufferbloat y auto-descubrimiento UDP inteligente.
-- 📹 **Cámara Virtual Nativa Dual (DirectShow + Media Foundation)**:
-  - Controlador dual registrado tanto en **DirectShow** (`CLSID_BouleCamVirtualCam1..3`) como en **Windows Media Foundation** (`CLSID_BouleCamMFVirtualCam` bajo `KSCATEGORY_VIDEO_CAMERA`).
-  - Compatible de inmediato con OBS Studio, vMix, Discord, Teams y aplicaciones modernas de Windows (UWP) sin necesidad de drivers de kernel inestables.
-- 🎛️ **Soporte Multi-Cámara Simultáneo**:
-  - Conecta múltiples teléfonos o tablets a la misma PC (cada uno recibe su canal independiente: `Cam 1`, `Cam 2`, `Cam 3`).
-  - Instancias dedicadas en OBS Studio (`/obs/1`, `/obs/2`, etc.) o dispositivos virtuales separados (`BouleCam Virtual Camera 1..3`) para mezclar sin interferencias.
+- 📹 **Cámara Virtual Nativa Unificada (DirectShow + Media Foundation)**:
+  - Controlador universal limpio registrado sin duplicaciones: se expone como una única fuente clara **`BouleCam Virtual Camera`** tanto en aplicaciones Win32 clásicas (**OBS Studio, vMix, Zoom, Discord** vía DirectShow) como en aplicaciones modernas de Windows (**Teams, Windows Camera, Chrome WebRTC** vía Media Foundation).
+  - Cero desorden (zero clutter): no duplica nombres ni crea múltiples dispositivos fantasma en los selectores de video externos.
+- ⚡ **Conmutador de Cuadros en Tiempo Real (60 FPS / 30 FPS)**:
+  - Alterna al instante entre 60 FPS (ultra-fluido) y 30 FPS con un simple clic sobre el indicador de FPS en la ventana principal o desde el menú de Ajustes.
+  - Negociación directa con el sensor de la cámara del teléfono (`CONTROL_AE_TARGET_FPS_RANGE`) garantizando máxima fluidez de captura.
+- 🎛️ **Soporte Multi-Cámara y OBS**:
+  - Transmisión dedicada de ultra-baja latencia hacia OBS Studio (`/obs`, `/obs/1`, etc.) vía HTTP Snapshot/MJPEG de alta tasa de cuadros.
   - Configuración persistente individual: cada dispositivo recuerda su propia rotación, lente, linterna, micrófono, balance de blancos y estado de espejo.
 - ⏱️ **Compensación Elástica de Deriva de Audio (Clock Drift Compensator)**:
   - Algoritmo de remuestreo elástico en cruce por cero (zero-crossing) en el motor DSP.
   - Mantiene sincronía perfecta de audio y video en transmisiones continuas de larga duración (más de 2 horas) evitando desfases progresivos o chasquidos.
 - 🎙️ **Audio de Estudio con Modos Inteligentes**:
-  - Captura PCM nativa a 48000 Hz, 16 bits Mono de ultra baja latencia con buffers de hardware de 10 ms.
+  - Captura PCM nativa a 48000 Hz, 16 bits Mono de ultra baja latencia con buffers elásticos de 20 ms.
   - **Modo Micrófono Principal**: Respuesta plana completa (0 dB) ideal para solistas o locución.
-  - **Modo Micrófono Ambiente**: Filtro pasa-altos (Low-Cut HPF a 220 Hz) y atenuación de -16 dB para capturar el sonido de la congregación sin saturar con frecuencias graves.
-  - Control de volumen, vúmetro en decibelios (dB) y muteo en tiempo real.
-- 🔋 **Ahorro de Energía y Modo Reposo Inteligente (Smart Idle Standby)**:
-  - **Modo Reposo Automático**: Detecta cuándo las fuentes virtuales (OBS, Zoom, vista previa) no están activas y suspende la codificación y sensores del teléfono, ahorrando más del 70% de batería y temperatura. Al activarse la fuente en la PC, se despierta en menos de 200 ms.
-  - **Atenuación de Pantalla (Dim Screen)**: Reduce el brillo de la pantalla del teléfono al 1% manteniendo la cámara activa, accesible desde el móvil o remotamente desde la PC.
+  - **Modo Micrófono Ambiente**: Filtro pasa-altos (Low-Cut HPF a 80 Hz) y atenuación balanceada de -3 dB para capturar el sonido de la congregación con calidez vocal, eliminando ruidos sordos de climatización y vibraciones de suelo.
+  - Control de volumen por ganancia Windows (dB), vúmetro en tiempo real y muteo instantáneo.
+- 🔋 **Ahorro de Energía y Atenuación de Pantalla (Dim Screen)**:
+  - Reduce el brillo de la pantalla del teléfono al 1% manteniendo la cámara activa, accesible desde el móvil o remotamente desde la PC para evitar calentamiento de batería.
 - 📐 **Selector Remoto de Resolución y Orientación Dinámica**:
-  - Cambio en caliente entre 720p, 1080p y 4K con adaptación dinámica de tasa de bits desde la aplicación de escritorio sin reiniciar el streaming.
+  - Cambio en caliente entre 720p, 1080p y 4K con adaptación dinámica de tasa de bits desde la aplicación de escritorio.
   - Soporta streaming vertical (1080x1920) y horizontal (1920x1080) adaptándose a la orientación física del móvil en el trípode.
 - 🎛️ **Controles Pro Manuales**:
   - Deslizadores en tiempo real para ISO, Compensación de Exposición (EV), Balance de Blancos (Temperatura) y Enfoque Manual / Autofoco continuo.

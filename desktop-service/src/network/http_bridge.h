@@ -37,7 +37,7 @@ struct DeviceInfo {
     int audioLevel = 0;
     bool isMicMuted = false;
     float micGainDb = 0.0f; // Microphone gain in dB (-40..+20)
-    bool isAmbientMic = false; // Ambient mic mode (HPF 220Hz + -16dB attenuation)
+    bool isAmbientMic = false; // Ambient mic mode (HPF 80Hz + -3dB gentle shaping)
 };
 
 struct SystemStatus {

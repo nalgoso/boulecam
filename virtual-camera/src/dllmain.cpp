@@ -22,7 +22,7 @@ static const wchar_t* g_wszAudioCam3Clsid    = L"{6B47C022-85A4-4D6C-9A52-2A1E7F
 
 // Media Foundation Virtual Camera Source
 static const wchar_t* g_wszMFVideoCamClsid   = L"{6B47C030-85A4-4D6C-9A52-2A1E7F19D3B1}";
-static const wchar_t* g_wszMFVideoCamName    = L"BouleCam Virtual Camera (Media Foundation)";
+static const wchar_t* g_wszMFVideoCamName    = L"BouleCam Virtual Camera";
 static const wchar_t* g_wszKSCategoryCamera  = L"{E5323777-F976-4f5b-9B55-B94699C46E44}"; // KSCATEGORY_VIDEO_CAMERA
 
 static const wchar_t* g_wszVideoCategory = L"{860BB310-5D01-11d0-BD3B-00A0C911CE86}"; // CLSID_VideoInputDeviceCategory
@@ -234,18 +234,24 @@ static void UnregisterDevice(HKEY rootKey, const wchar_t* clsidStr, const wchar_
     RegDeleteKeyW(rootKey, szKey);
 }
 
-// Helper to register all 3 cameras and Media Foundation virtual camera on a given root key
+// Helper to register clean, unified camera sources without cluttering external device lists
 static void RegisterAllCams(HKEY rootKey, const wchar_t* dllPath) {
+    // 1. DirectShow Primary Video Device (OBS Studio, vMix, Zoom, Discord)
     RegisterDevice(rootKey, g_wszVideoCam1Clsid, g_wszVideoCategory, g_wszVideoCam1Name, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
+    
+    // 2. DirectShow Primary Audio Device
     RegisterDevice(rootKey, g_wszAudioCam1Clsid, g_wszAudioCategory, g_wszAudioCam1Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
-    RegisterDevice(rootKey, g_wszVideoCam2Clsid, g_wszVideoCategory, g_wszVideoCam2Name, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
-    RegisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
-    RegisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
-    RegisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
 
-    // Media Foundation Virtual Camera Registration (UWP & Modern Windows Camera API)
-    RegisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
+    // 3. Media Foundation Virtual Camera (UWP, Windows Camera, Teams) under KSCATEGORY_VIDEO_CAMERA only
     RegisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName, dllPath, nullptr, 0);
+
+    // Clean up auxiliary/stale camera slots to prevent clutter in external device lists
+    UnregisterDevice(rootKey, g_wszVideoCam2Clsid, g_wszVideoCategory, g_wszVideoCam2Name);
+    UnregisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name);
+    UnregisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name);
+    UnregisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name);
+    UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, L"BouleCam Virtual Camera (Media Foundation)");
+    UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName);
 }
 
 static void UnregisterAllCams(HKEY rootKey) {
@@ -255,8 +261,7 @@ static void UnregisterAllCams(HKEY rootKey) {
     UnregisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name);
     UnregisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name);
     UnregisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name);
-
-    // Media Foundation Virtual Camera Unregistration
+    UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, L"BouleCam Virtual Camera (Media Foundation)");
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName);
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName);
 }

@@ -823,7 +823,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         encoder?.start()
-        encoder?.setSuspended(true) // Suspended until PC connection is established!
+        encoder?.setSuspended(false)
 
         // 3.5. Prepare Ultra Low Latency PCM Audio Pipeline (Starts only when connected)
         audioPipeline = AudioCapturePipeline(sampleRate = 48000) { pcmData, size ->

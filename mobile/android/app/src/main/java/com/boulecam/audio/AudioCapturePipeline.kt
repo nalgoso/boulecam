@@ -44,8 +44,7 @@ class AudioCapturePipeline(
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val audioFormat = AudioFormat.ENCODING_PCM_16BIT
         val minBufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        // Optimal low-latency buffer size: double the minimal hardware burst size
-        val bufferSize = maxOf(minBufSize, 1920)
+        val bufferSize = maxOf(minBufSize, 4096)
 
         var record: AudioRecord? = null
 
@@ -133,22 +132,18 @@ class AudioCapturePipeline(
         }
 
         workerThread = Thread({
-            // 10 ms ultra-low latency chunks: 48000 samples/sec * 2 bytes/sample * 0.010s = 960 bytes
-            val chunkSizeBytes = 960
+            // 20 ms low-latency chunks: 48000 samples/sec * 2 bytes/sample * 0.020s = 1920 bytes
+            val chunkSizeBytes = 1920
             val buffer = ByteArray(chunkSizeBytes)
 
             while (isRunning.get()) {
                 val record = synchronized(recordLock) { audioRecord } ?: break
-                val readBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    record.read(buffer, 0, chunkSizeBytes, AudioRecord.READ_BLOCKING)
-                } else {
-                    record.read(buffer, 0, chunkSizeBytes)
-                }
+                val readBytes = record.read(buffer, 0, chunkSizeBytes)
 
                 if (readBytes > 0) {
                     onAudioChunk(buffer, readBytes)
                 } else if (readBytes < 0) {
-                    try { Thread.sleep(5) } catch (ignored: InterruptedException) { break }
+                    try { Thread.sleep(10) } catch (ignored: InterruptedException) { break }
                 }
             }
         }, "BouleCamAudioCapture").apply {

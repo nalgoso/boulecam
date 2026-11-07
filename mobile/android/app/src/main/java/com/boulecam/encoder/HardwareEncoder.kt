@@ -65,12 +65,6 @@ class HardwareEncoder(
     fun setSuspended(suspend: Boolean) {
         val wasSuspended = isSuspended
         isSuspended = suspend
-        try {
-            val bundle = Bundle().apply {
-                putInt(MediaCodec.PARAMETER_KEY_SUSPEND, if (suspend) 1 else 0)
-            }
-            mediaCodec?.setParameters(bundle)
-        } catch (ignored: Exception) {}
         if (wasSuspended && !suspend) {
             requestKeyFrame()
         }
