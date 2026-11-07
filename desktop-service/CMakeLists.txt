@@ -43,6 +43,8 @@ target_link_libraries(boulecam-desktop PRIVATE
     d3d11
     dxgi
     winmm
+    setupapi
+    advapi32
 )
 
 target_link_options(boulecam-desktop PRIVATE

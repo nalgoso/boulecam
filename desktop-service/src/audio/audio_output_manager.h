@@ -31,12 +31,19 @@ public:
     float GetCurrentLevel() const { return m_currentLevel.load(); }
     std::string GetDeviceName() const { return m_activeDeviceName; }
     bool IsCableActive() const { return m_isCableDevice; }
+    bool IsWdmActive() const { return m_isWdmActive; }
 
     static std::vector<std::pair<int, std::string>> EnumerateOutputDevices();
     bool SelectDevice(int deviceIndex);
 
 private:
     void CleanCompletedHeaders();
+    bool InitializeWdmAudio();
+    void ShutdownWdmAudio();
+    void EnsureAudioEndpointActive();
+
+    HANDLE m_hWdmDevice = INVALID_HANDLE_VALUE;
+    bool m_isWdmActive = false;
 
     HWAVEOUT m_hWaveOut = nullptr;
     WAVEFORMATEX m_wfx{};
