@@ -966,7 +966,7 @@ class MainActivity : AppCompatActivity() {
                     audioPipeline?.setAmbientMode(wantAmbient)
                     Toast.makeText(
                         this,
-                        if (wantAmbient) "Micrófono: Ambiente de Congregación" else "Micrófono: Principal",
+                        if (wantAmbient) "Micrófono: Captura de Ambiente" else "Micrófono: Principal",
                         Toast.LENGTH_SHORT
                     ).show()
                 }

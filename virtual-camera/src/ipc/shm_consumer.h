@@ -42,13 +42,13 @@ public:
 
     // Active readers tracking for Smart Idle Standby
     void IncrementActiveReaders() {
-        if (m_pIpcHeader) {
+        if (m_isWritable && m_pIpcHeader) {
             InterlockedIncrement(reinterpret_cast<volatile LONG*>(&m_pIpcHeader->active_readers_count));
         }
     }
 
     void DecrementActiveReaders() {
-        if (m_pIpcHeader && m_pIpcHeader->active_readers_count > 0) {
+        if (m_isWritable && m_pIpcHeader && m_pIpcHeader->active_readers_count > 0) {
             InterlockedDecrement(reinterpret_cast<volatile LONG*>(&m_pIpcHeader->active_readers_count));
         }
     }
@@ -63,6 +63,7 @@ private:
     BouleCamIpcHeader* m_pIpcHeader;
     uint32_t m_lastReadSequence;
     int m_camIndex = 1;
+    bool m_isWritable = false;
 };
 
 } // namespace boulecam

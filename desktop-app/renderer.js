@@ -84,13 +84,13 @@ function renderMicModeUI(isAmbient) {
     btnAmbient.classList.toggle('ambient', isAmbient);
   }
   if (badgeMode) {
-    badgeMode.textContent = isAmbient ? 'Ambiente (Congregación)' : 'Principal';
+    badgeMode.textContent = isAmbient ? 'Captura de Ambiente' : 'Principal';
     badgeMode.style.background = isAmbient ? 'rgba(16, 185, 129, 0.16)' : 'rgba(0, 229, 255, 0.12)';
     badgeMode.style.color = isAmbient ? '#34d399' : 'var(--accent-cyan)';
   }
   if (descMode) {
     descMode.textContent = isAmbient
-      ? '🏛️ Filtro Pasa-Altos (Low-Cut 220Hz) + Atenuación ambiente activa. Limpia graves del PA y evita choque con la consola.'
+      ? '🌐 Filtro Pasa-Altos (Low-Cut 80Hz) + Captura de ambiente. Limpia frecuencias subgraves y vibraciones.'
       : '🎙️ Respuesta plana completa (0 dB). Ideal si el teléfono es la única fuente de audio.';
   }
   if (toggleAmbientModal) {
@@ -105,7 +105,7 @@ async function setMicAmbientMode(wantAmbient) {
     await fetch(`${API_BASE}/api/mic/mode?cam=${activeCamId}&mode=${wantAmbient ? 'ambient' : 'main'}`, { method: 'POST' });
   } catch (err) {}
   showToast(wantAmbient
-    ? '🏛️ Modo Micrófono Ambiente activado (Filtro Low-Cut 80Hz)'
+    ? '🌐 Captura de Ambiente activada (Filtro Low-Cut 80Hz)'
     : '🎙️ Modo Micrófono Principal activado (Respuesta Plana)'
   );
 }

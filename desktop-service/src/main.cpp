@@ -133,7 +133,7 @@ int main(int argc, char* argv[]) {
             dsp->SetAmbientMode(isAmbient);
         }
         std::cout << "[Audio DSP] Device " << deviceId << " modo: "
-                  << (isAmbient ? "AMBIENTE CONGREGACION (HPF Low-Cut 80Hz + -3dB)" : "PRINCIPAL (Respuesta Plana)") << std::endl;
+                  << (isAmbient ? "AMBIENTE (HPF Low-Cut 80Hz + -3dB)" : "PRINCIPAL (Respuesta Plana)") << std::endl;
 
         BouleCamCameraCmd cmd{};
         cmd.magic = BOULECAM_MAGIC;
@@ -312,7 +312,7 @@ int main(int argc, char* argv[]) {
     tcpReceiver.SetAudioCallback([&shmProducers, &httpBridge, &audioOutput, &audioDspMap, &audioDspMutex](
         int deviceId, const BouleCamAudioHeader& header, const uint8_t* payloadData, uint32_t payloadSize) {
         
-        // Mutable buffer for real-time church DSP (High-Pass Filter + Ambient level conditioning + Clock Drift Compensation)
+        // Mutable buffer for real-time DSP (High-Pass Filter + Ambient level conditioning + Clock Drift Compensation)
         std::vector<uint8_t> pcmData(payloadData, payloadData + payloadSize);
         {
             std::lock_guard<std::mutex> lock(audioDspMutex);

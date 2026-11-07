@@ -205,7 +205,7 @@ function createTray() {
     }
 
     tray = new Tray(trayIcon);
-    tray.setToolTip('BouleCam - Iglesia Boulevard Guzmán');
+    tray.setToolTip('BouleCam');
 
     const contextMenu = Menu.buildFromTemplate([
         {

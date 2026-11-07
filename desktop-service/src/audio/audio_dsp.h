@@ -63,7 +63,7 @@ private:
  * Real-Time Clock Drift Compensator (Elastic Time-Stretching via Zero-Crossing Micro-Resampling)
  * 
  * Prevents A/V desynchronization and buffer overflow/underflow over multi-hour live streams
- * (such as 2-4 hour church services) caused by differences between the mobile mic hardware clock
+ * caused by differences between the mobile mic hardware clock
  * and the PC playback / DirectShow / OBS audio clock.
  * 
  * Corrections are performed 100% inaudibly by inserting or dropping single samples at low-energy
@@ -93,13 +93,11 @@ private:
 };
 
 /**
- * Dedicated Church Audio DSP Processor
+ * Dedicated Audio DSP Processor
  * - Modo Principal: Flat response (unfiltered), full dynamic spectrum.
- * - Modo Ambiente (Congregación): High-Pass Filter (Low-Cut a 220 Hz) para eliminar
- *   retumbos de sala, rebote de subwoofers del PA y choque de fase/peine,
- *   junto con atenuación de ganancia ambiental de -16 dB para integrarse
- *   perfectamente con la consola principal sin opacarla.
- * - Clock Drift Compensation integrado para sincronía de audio infinita.
+ * - Modo Ambiente: High-Pass Filter (Low-Cut a 80 Hz) para eliminar
+ *   retumbos de sala, vibraciones y ruidos mecánicos de suelo sin afectar el cuerpo sonoro.
+ * - Clock Drift Compensation integrado para sincronía de audio permanente.
  */
 class AudioDspProcessor {
 public:

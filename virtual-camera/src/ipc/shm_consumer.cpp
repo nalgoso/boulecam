@@ -39,20 +39,39 @@ bool ShmConsumer::Open(int camIndex) {
 bool ShmConsumer::Open(const std::wstring& shmName, const std::wstring& eventName) {
     if (m_pIpcHeader != nullptr) return true;
 
-    m_hMapFile = OpenFileMappingW(FILE_MAP_READ, FALSE, shmName.c_str());
-    if (m_hMapFile == NULL) {
-        return false;
+    size_t totalBytes = sizeof(BouleCamIpcHeader);
+
+    // 1. Attempt to open with Read+Write access so active_readers_count can be updated safely
+    m_hMapFile = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, shmName.c_str());
+    if (m_hMapFile != NULL) {
+        m_pIpcHeader = static_cast<BouleCamIpcHeader*>(
+            MapViewOfFile(m_hMapFile, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, totalBytes)
+        );
+        if (m_pIpcHeader != nullptr) {
+            m_isWritable = true;
+        } else {
+            CloseHandle(m_hMapFile);
+            m_hMapFile = NULL;
+        }
     }
 
-    size_t totalBytes = sizeof(BouleCamIpcHeader);
-    m_pIpcHeader = static_cast<BouleCamIpcHeader*>(
-        MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, totalBytes)
-    );
-
+    // 2. Fallback: If read+write opening/mapping failed, try read-only safely
     if (m_pIpcHeader == nullptr) {
-        CloseHandle(m_hMapFile);
-        m_hMapFile = NULL;
-        return false;
+        m_hMapFile = OpenFileMappingW(FILE_MAP_READ, FALSE, shmName.c_str());
+        if (m_hMapFile != NULL) {
+            m_pIpcHeader = static_cast<BouleCamIpcHeader*>(
+                MapViewOfFile(m_hMapFile, FILE_MAP_READ, 0, 0, totalBytes)
+            );
+            if (m_pIpcHeader != nullptr) {
+                m_isWritable = false;
+            } else {
+                CloseHandle(m_hMapFile);
+                m_hMapFile = NULL;
+                return false;
+            }
+        } else {
+            return false;
+        }
     }
 
     // Open notification event
@@ -73,6 +92,7 @@ void ShmConsumer::Close() {
         CloseHandle(m_hMapFile);
         m_hMapFile = NULL;
     }
+    m_isWritable = false;
 }
 
 bool ShmConsumer::IsStreamingActive() const {

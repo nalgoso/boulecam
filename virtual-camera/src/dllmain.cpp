@@ -242,16 +242,14 @@ static void RegisterAllCams(HKEY rootKey, const wchar_t* dllPath) {
     // 2. DirectShow Primary Audio Device
     RegisterDevice(rootKey, g_wszAudioCam1Clsid, g_wszAudioCategory, g_wszAudioCam1Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
 
-    // 3. Media Foundation Virtual Camera (UWP, Windows Camera, Teams) under KSCATEGORY_VIDEO_CAMERA only
-    RegisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName, dllPath, nullptr, 0);
-
-    // Clean up auxiliary/stale camera slots to prevent clutter in external device lists
+    // Clean up auxiliary/stale camera slots and legacy categories to prevent clutter in external device lists
     UnregisterDevice(rootKey, g_wszVideoCam2Clsid, g_wszVideoCategory, g_wszVideoCam2Name);
     UnregisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name);
     UnregisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name);
     UnregisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name);
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, L"BouleCam Virtual Camera (Media Foundation)");
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName);
+    UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName);
 }
 
 static void UnregisterAllCams(HKEY rootKey) {

@@ -26,7 +26,7 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
 - 🎙️ **Audio de Estudio con Modos Inteligentes**:
   - Captura PCM nativa a 48000 Hz, 16 bits Mono de ultra baja latencia con buffers elásticos de 20 ms.
   - **Modo Micrófono Principal**: Respuesta plana completa (0 dB) ideal para solistas o locución.
-  - **Modo Micrófono Ambiente**: Filtro pasa-altos (Low-Cut HPF a 80 Hz) y atenuación balanceada de -3 dB para capturar el sonido de la congregación con calidez vocal, eliminando ruidos sordos de climatización y vibraciones de suelo.
+  - **Modo Micrófono Ambiente**: Filtro pasa-altos (Low-Cut HPF a 80 Hz) y atenuación balanceada de -3 dB para capturar el sonido ambiente con calidez vocal, eliminando ruidos sordos de climatización y vibraciones de suelo.
   - Control de volumen por ganancia Windows (dB), vúmetro en tiempo real y muteo instantáneo.
 - 🔋 **Ahorro de Energía y Atenuación de Pantalla (Dim Screen)**:
   - Reduce el brillo de la pantalla del teléfono al 1% manteniendo la cámara activa, accesible desde el móvil o remotamente desde la PC para evitar calentamiento de batería.
@@ -54,7 +54,7 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
 [ Daemon C++ Windows: boulecam-desktop.exe ]
    ├── Receptor TCP Multi-Dispositivo con buffers elásticos
    ├── Decodificador Hardware Media Foundation H.264
-   ├── Procesador DSP de Audio (Compensador de Deriva + Filtro HPF 220Hz)
+   ├── Procesador DSP de Audio (Compensador de Deriva + Filtro HPF 80Hz)
    ├── Memoria Compartida Triple-Buffer IPC (DirectShow & Media Foundation)
    └── Servidor HTTP Reactivo (Puerto 8090)
           │

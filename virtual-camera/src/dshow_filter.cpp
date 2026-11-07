@@ -824,6 +824,12 @@ void BouleCamVideoPin::StreamingWorker() {
     while (m_isStreaming.load()) {
         auto tStart = std::chrono::steady_clock::now();
 
+        if (!m_shmConsumer.IsConnected()) {
+            if (m_shmConsumer.Open(m_camIndex)) {
+                m_shmConsumer.IncrementActiveReaders();
+            }
+        }
+
         IMemAllocator* pAlloc = m_pAllocator;
         IMemInputPin* pInput = m_pMemInputPin;
 
@@ -1271,6 +1277,10 @@ void BouleCamAudioPin::StreamingWorker() {
 
     while (m_isStreaming.load()) {
         auto tStart = std::chrono::steady_clock::now();
+
+        if (!m_shmConsumer.IsConnected()) {
+            m_shmConsumer.Open(m_camIndex);
+        }
 
         IMemAllocator* pAlloc = m_pAllocator;
         IMemInputPin* pInput = m_pMemInputPin;
