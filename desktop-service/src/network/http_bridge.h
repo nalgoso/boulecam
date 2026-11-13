@@ -10,6 +10,7 @@
 #include <vector>
 #include <map>
 #include <mutex>
+#include <memory>
 #include "boulecam_protocol.h"
 #include "boulecam_ipc.h"
 
@@ -66,7 +67,7 @@ public:
     HttpControlBridge(TcpReceiver& receiver);
     ~HttpControlBridge();
 
-    bool Start(uint16_t port = 8090);
+    bool Start(uint16_t port = 8095);
     void Stop();
 
     void UpdateStats(int deviceId, float fps, float latencyMs, uint32_t bitrateKbps);
@@ -90,9 +91,15 @@ public:
     using MicMuteCallback = std::function<void(int deviceId, bool muted)>;
     using MicGainCallback = std::function<void(int deviceId, float gainDb)>;
     using AudioModeCallback = std::function<void(int deviceId, bool isAmbient)>;
+    using SwapCallback = std::function<void(int camA, int camB)>;
+    using DeviceNameCallback = std::function<void(int deviceId, const std::string& name)>;
     void SetMicMuteCallback(MicMuteCallback cb) { m_micMuteCallback = cb; }
     void SetMicGainCallback(MicGainCallback cb) { m_micGainCallback = cb; }
     void SetAudioModeCallback(AudioModeCallback cb) { m_audioModeCallback = cb; }
+    void SetSwapCallback(SwapCallback cb) { m_swapCallback = cb; }
+    void SetDeviceNameCallback(DeviceNameCallback cb) { m_deviceNameCallback = cb; }
+
+    void SyncDirectShowDevices(bool onlyKeepLocked = false);
 
     void UpdateDecodedFrame(int deviceId, const uint8_t* pDecodedData, uint32_t dataSize, uint32_t width, uint32_t height, BouleCamPixelFormat pixelFormat, uint16_t rotation = 0);
 
@@ -142,8 +149,8 @@ private:
     std::map<int, DeviceInfo> m_devices;
 
     std::mutex m_frameMutex;
-    std::map<int, std::vector<uint8_t>> m_deviceBmpFrames;
-    std::vector<uint8_t> m_latestBmpFrame;
+    std::map<int, std::shared_ptr<const std::vector<uint8_t>>> m_deviceBmpFrames;
+    std::shared_ptr<const std::vector<uint8_t>> m_latestBmpFrame;
 
     std::mutex m_transformMutex;
     std::map<int, DeviceTransform> m_deviceTransforms;
@@ -158,6 +165,8 @@ private:
     MicMuteCallback m_micMuteCallback;
     MicGainCallback m_micGainCallback;
     AudioModeCallback m_audioModeCallback;
+    SwapCallback m_swapCallback;
+    DeviceNameCallback m_deviceNameCallback;
 };
 
 } // namespace boulecam

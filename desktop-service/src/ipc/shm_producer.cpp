@@ -146,6 +146,13 @@ void ShmProducer::SetAudioGainDb(float gainDb) {
     }
 }
 
+void ShmProducer::SetDeviceName(const std::string& name) {
+    if (m_pIpcHeader != nullptr) {
+        memset(m_pIpcHeader->device_name, 0, sizeof(m_pIpcHeader->device_name));
+        strncpy(m_pIpcHeader->device_name, name.c_str(), sizeof(m_pIpcHeader->device_name) - 1);
+    }
+}
+
 bool ShmProducer::WriteFrame(const uint8_t* pFrameData,
                              uint32_t dataSize,
                              uint32_t width,

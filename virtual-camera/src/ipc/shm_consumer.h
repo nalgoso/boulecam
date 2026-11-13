@@ -56,12 +56,16 @@ public:
     // Audio control accessors (read from SHM flags set by desktop-service)
     bool  IsAudioMuted() const;
     float GetAudioGainDb() const;
+    std::string GetDeviceName() const;
 
 private:
     HANDLE m_hMapFile;
     HANDLE m_hNewFrameEvent;
     BouleCamIpcHeader* m_pIpcHeader;
     uint32_t m_lastReadSequence;
+    uint32_t m_audioReadPos = 0;
+    uint32_t m_lastAudioWriteSeq = 0;
+    bool m_audioReadInitialized = false;
     int m_camIndex = 1;
     bool m_isWritable = false;
 };

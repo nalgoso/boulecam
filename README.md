@@ -11,9 +11,12 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
 - 🚀 **Ultra Baja Latencia**:
   - **Modo Cable USB**: < 20 ms mediante túnel ADB directo sin pasar por el router.
   - **Modo Wi-Fi**: < 50 ms con protocolo TCP binario de alto rendimiento (`TCP_NODELAY`), colas elásticas anti-bufferbloat y auto-descubrimiento UDP inteligente.
-- 📹 **Cámara Virtual Nativa Unificada (DirectShow + Media Foundation)**:
-  - Controlador universal limpio registrado sin duplicaciones: se expone como una única fuente clara **`BouleCam Virtual Camera`** tanto en aplicaciones Win32 clásicas (**OBS Studio, vMix, Zoom, Discord** vía DirectShow) como en aplicaciones modernas de Windows (**Teams, Windows Camera, Chrome WebRTC** vía Media Foundation).
-  - Cero desorden (zero clutter): no duplica nombres ni crea múltiples dispositivos fantasma en los selectores de video externos.
+- 📹 **Cámaras Virtuales Dinámicas por Dispositivo (DirectShow + Audio Embebido)**:
+  - Registra dinámicamente en Windows únicamente los dispositivos vinculados (`🔒`) o conectados en ese instante, identificándolos con su nombre real o personalizado: **`BouleCam (<Nombre del dispositivo>)`** y **`BouleCam Audio (<Nombre del dispositivo>)`**.
+  - Cero cámaras fantasma: si un canal no tiene un teléfono activo ni vinculado, no aparece en OBS, Zoom, Meet ni Teams.
+  - Soporta hasta 4 cámaras simultáneas con video y micrófono independiente por cada dispositivo.
+- 🖥️ **Proyección Directa a Pantalla Completa**:
+  - Botón **Proyectar** integrado en la barra superior con detección automática del nombre real de cada monitor/proyector conectado en Windows (vía EDID/WMI).
 - ⚡ **Conmutador de Cuadros en Tiempo Real (60 FPS / 30 FPS)**:
   - Alterna al instante entre 60 FPS (ultra-fluido) y 30 FPS con un simple clic sobre el indicador de FPS en la ventana principal o desde el menú de Ajustes.
   - Negociación directa con el sensor de la cámara del teléfono (`CONTROL_AE_TARGET_FPS_RANGE`) garantizando máxima fluidez de captura.
@@ -56,7 +59,7 @@ Desarrollado para transmisiones en vivo profesionales con soporte multi-cámara 
    ├── Decodificador Hardware Media Foundation H.264
    ├── Procesador DSP de Audio (Compensador de Deriva + Filtro HPF 80Hz)
    ├── Memoria Compartida Triple-Buffer IPC (DirectShow & Media Foundation)
-   └── Servidor HTTP Reactivo (Puerto 8090)
+   └── Servidor HTTP Reactivo (Puerto 8095)
           │
           ├──────────────────────────┐
           ▼                          ▼
@@ -113,7 +116,7 @@ Para máxima versatilidad y rendimiento, **BouleCam opera como dispositivos nati
    - Aplicar filtros profesionales nativos de OBS (Supresión de ruido, Compresor y Limitador).
 
 #### 🌐 C. Fuente de Navegador (Alternativa opcional):
-- Si deseas integrar la señal como Browser Source, puedes usar la URL `http://127.0.0.1:8090/obs/1` (o `/obs/2` para multi-cámara).
+- Si deseas integrar la señal como Browser Source, puedes usar la URL `http://127.0.0.1:8095/obs/1` (o `/obs/2` para multi-cámara).
 
 ---
 

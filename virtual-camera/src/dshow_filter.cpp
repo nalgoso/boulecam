@@ -371,11 +371,24 @@ inline STDMETHODIMP_(ULONG) BouleCamMediaSample::Release() {
 
 class BouleCamEnumPins : public IEnumPins {
 public:
-    BouleCamEnumPins(IPin* pPin) : m_cRef(1), m_pPin(pPin), m_pos(0) {
-        if (m_pPin) m_pPin->AddRef();
+    BouleCamEnumPins(IPin* pPin) : m_cRef(1), m_pos(0) {
+        if (pPin) {
+            pPin->AddRef();
+            m_pins.push_back(pPin);
+        }
+    }
+    BouleCamEnumPins(const std::vector<IPin*>& pins, ULONG pos = 0) : m_cRef(1), m_pos(pos) {
+        for (IPin* p : pins) {
+            if (p) {
+                p->AddRef();
+                m_pins.push_back(p);
+            }
+        }
     }
     virtual ~BouleCamEnumPins() {
-        if (m_pPin) m_pPin->Release();
+        for (IPin* p : m_pins) {
+            if (p) p->Release();
+        }
     }
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -400,19 +413,20 @@ public:
         if (pcFetched) *pcFetched = 0;
         if (cPins == 0) return S_OK;
 
-        if (m_pos == 0 && m_pPin) {
-            ppPins[0] = m_pPin;
-            m_pPin->AddRef();
-            m_pos = 1;
-            if (pcFetched) *pcFetched = 1;
-            return (cPins == 1) ? S_OK : S_FALSE;
+        ULONG count = 0;
+        while (m_pos < m_pins.size() && count < cPins) {
+            ppPins[count] = m_pins[m_pos];
+            if (ppPins[count]) ppPins[count]->AddRef();
+            count++;
+            m_pos++;
         }
-        return S_FALSE;
+        if (pcFetched) *pcFetched = count;
+        return (count == cPins) ? S_OK : S_FALSE;
     }
 
     STDMETHODIMP Skip(ULONG cPins) override {
         m_pos += cPins;
-        return (m_pos <= 1) ? S_OK : S_FALSE;
+        return (m_pos <= m_pins.size()) ? S_OK : S_FALSE;
     }
 
     STDMETHODIMP Reset() override {
@@ -422,13 +436,13 @@ public:
 
     STDMETHODIMP Clone(IEnumPins** ppEnum) override {
         if (!ppEnum) return E_POINTER;
-        *ppEnum = new BouleCamEnumPins(m_pPin);
+        *ppEnum = new BouleCamEnumPins(m_pins, m_pos);
         return S_OK;
     }
 
 private:
     std::atomic<ULONG> m_cRef;
-    IPin* m_pPin;
+    std::vector<IPin*> m_pins;
     ULONG m_pos;
 };
 
@@ -821,6 +835,8 @@ void BouleCamVideoPin::StreamingWorker() {
     REFERENCE_TIME sampleTime = 0;
     REFERENCE_TIME frameDuration = 166666; // 60 FPS
 
+    std::vector<uint8_t> nv12Temp;
+
     while (m_isStreaming.load()) {
         auto tStart = std::chrono::steady_clock::now();
 
@@ -844,13 +860,45 @@ void BouleCamVideoPin::StreamingWorker() {
                 uint32_t width = 1920, height = 1080, stride = 1920;
                 BouleCamPixelFormat fmt = BOULECAM_PIXFMT_NV12;
 
-                bool gotFrame = m_shmConsumer.ReadLatestFrame(pDst, dstSize, width, height, stride, fmt, 16);
-                if (!gotFrame) {
-                    // Clean idle pattern: dark charcoal studio background
-                    size_t ySize = 1920 * 1080;
-                    if ((size_t)dstSize >= ySize * 3 / 2) {
-                        memset(pDst, 28, ySize); // Dark charcoal Y
-                        memset(pDst + ySize, 128, ySize / 2); // Neutral UV
+                if (m_currentSubtype == MEDIASUBTYPE_RGB24) {
+                    const uint32_t nv12Size = 1920 * 1080 * 3 / 2;
+                    if (nv12Temp.size() < nv12Size) nv12Temp.resize(nv12Size);
+                    bool gotFrame = m_shmConsumer.ReadLatestFrame(nv12Temp.data(), nv12Size, width, height, stride, fmt, 16);
+                    if (gotFrame && (size_t)dstSize >= 1920 * 1080 * 3) {
+                        const uint8_t* yPlane = nv12Temp.data();
+                        const uint8_t* uvPlane = nv12Temp.data() + (1920 * 1080);
+                        // Convert NV12 to bottom-up RGB24 (BGR24) for DirectShow apps like Zoom
+                        for (int y = 0; y < 1080; ++y) {
+                            int dstY = 1079 - y;
+                            uint8_t* dstRow = pDst + (dstY * 1920 * 3);
+                            const uint8_t* yRow = yPlane + (y * 1920);
+                            const uint8_t* uvRow = uvPlane + ((y >> 1) * 1920);
+                            for (int x = 0; x < 1920; ++x) {
+                                int Y = yRow[x];
+                                int U = uvRow[x & ~1] - 128;
+                                int V = uvRow[(x & ~1) + 1] - 128;
+                                int c = Y - 16;
+                                if (c < 0) c = 0;
+                                int r = (298 * c + 409 * V + 128) >> 8;
+                                int g = (298 * c - 100 * U - 208 * V + 128) >> 8;
+                                int b = (298 * c + 516 * U + 128) >> 8;
+                                dstRow[x * 3 + 0] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
+                                dstRow[x * 3 + 1] = (uint8_t)(g < 0 ? 0 : (g > 255 ? 255 : g));
+                                dstRow[x * 3 + 2] = (uint8_t)(r < 0 ? 0 : (r > 255 ? 255 : r));
+                            }
+                        }
+                    } else if ((size_t)dstSize >= 1920 * 1080 * 3) {
+                        memset(pDst, 28, 1920 * 1080 * 3);
+                    }
+                } else {
+                    bool gotFrame = m_shmConsumer.ReadLatestFrame(pDst, dstSize, width, height, stride, fmt, 16);
+                    if (!gotFrame) {
+                        // Clean idle pattern: dark charcoal studio background
+                        size_t ySize = 1920 * 1080;
+                        if ((size_t)dstSize >= ySize * 3 / 2) {
+                            memset(pDst, 28, ySize); // Dark charcoal Y
+                            memset(pDst + ySize, 128, ySize / 2); // Neutral UV
+                        }
                     }
                 }
 
@@ -884,6 +932,7 @@ void BouleCamVideoPin::StreamingWorker() {
 BouleCamVideoFilter::BouleCamVideoFilter(int camIndex)
     : m_camIndex(camIndex) {
     m_pPin = new BouleCamVideoPin(this, camIndex);
+    m_pAudioPin = new BouleCamAudioPin(this, camIndex);
 }
 
 BouleCamVideoFilter::~BouleCamVideoFilter() {
@@ -891,6 +940,10 @@ BouleCamVideoFilter::~BouleCamVideoFilter() {
     if (m_pPin) {
         m_pPin->Release();
         m_pPin = nullptr;
+    }
+    if (m_pAudioPin) {
+        m_pAudioPin->Release();
+        m_pAudioPin = nullptr;
     }
 }
 
@@ -920,6 +973,7 @@ STDMETHODIMP BouleCamVideoFilter::GetClassID(CLSID* pClassID) {
     if (!pClassID) return E_POINTER;
     if (m_camIndex == 2) *pClassID = CLSID_BouleCamVirtualCam2;
     else if (m_camIndex == 3) *pClassID = CLSID_BouleCamVirtualCam3;
+    else if (m_camIndex == 4) *pClassID = CLSID_BouleCamVirtualCam4;
     else *pClassID = CLSID_BouleCamVirtualCam;
     return S_OK;
 }
@@ -928,6 +982,7 @@ STDMETHODIMP BouleCamVideoFilter::Stop() {
     std::lock_guard<std::mutex> lock(m_filterMutex);
     m_state = State_Stopped;
     if (m_pPin) m_pPin->StopStreaming();
+    if (m_pAudioPin) m_pAudioPin->StopStreaming();
     return S_OK;
 }
 
@@ -935,6 +990,7 @@ STDMETHODIMP BouleCamVideoFilter::Pause() {
     std::lock_guard<std::mutex> lock(m_filterMutex);
     m_state = State_Paused;
     if (m_pPin) m_pPin->StartStreaming();
+    if (m_pAudioPin) m_pAudioPin->StartStreaming();
     return S_OK;
 }
 
@@ -942,6 +998,7 @@ STDMETHODIMP BouleCamVideoFilter::Run(REFERENCE_TIME) {
     std::lock_guard<std::mutex> lock(m_filterMutex);
     m_state = State_Running;
     if (m_pPin) m_pPin->StartStreaming();
+    if (m_pAudioPin) m_pAudioPin->StartStreaming();
     return S_OK;
 }
 
@@ -970,7 +1027,8 @@ STDMETHODIMP BouleCamVideoFilter::GetSyncSource(IReferenceClock** pClock) {
 
 STDMETHODIMP BouleCamVideoFilter::EnumPins(IEnumPins** ppEnum) {
     if (!ppEnum) return E_POINTER;
-    *ppEnum = new BouleCamEnumPins(m_pPin);
+    std::vector<IPin*> pins = { m_pPin, m_pAudioPin };
+    *ppEnum = new BouleCamEnumPins(pins);
     return S_OK;
 }
 
@@ -981,15 +1039,25 @@ STDMETHODIMP BouleCamVideoFilter::FindPin(LPCWSTR Id, IPin** ppPin) {
         if (*ppPin) (*ppPin)->AddRef();
         return S_OK;
     }
+    if (Id && wcscmp(Id, L"Audio Capture") == 0) {
+        *ppPin = m_pAudioPin;
+        if (*ppPin) (*ppPin)->AddRef();
+        return S_OK;
+    }
     *ppPin = nullptr;
     return VFW_E_NOT_FOUND;
 }
 
 STDMETHODIMP BouleCamVideoFilter::QueryFilterInfo(FILTER_INFO* pInfo) {
     if (!pInfo) return E_POINTER;
-    if (m_camIndex == 2)      wcscpy_s(pInfo->achName, L"BouleCam Virtual Camera 2");
-    else if (m_camIndex == 3) wcscpy_s(pInfo->achName, L"BouleCam Virtual Camera 3");
-    else                      wcscpy_s(pInfo->achName, L"BouleCam Virtual Camera");
+    std::string devName = m_pPin ? m_pPin->GetDeviceName() : "";
+    if (!devName.empty()) {
+        wchar_t wideDev[64] = {0};
+        MultiByteToWideChar(CP_UTF8, 0, devName.c_str(), -1, wideDev, 63);
+        swprintf_s(pInfo->achName, L"BouleCam (%s)", wideDev);
+    } else {
+        swprintf_s(pInfo->achName, L"BouleCam (Cam %d)", m_camIndex);
+    }
     pInfo->pGraph = m_pGraph;
     if (pInfo->pGraph) pInfo->pGraph->AddRef();
     return S_OK;
@@ -1016,7 +1084,7 @@ STDMETHODIMP_(ULONG) BouleCamVideoFilter::GetMiscFlags() {
 // AUDIO PIN IMPLEMENTATION
 // =========================================================================
 
-BouleCamAudioPin::BouleCamAudioPin(BouleCamAudioFilter* pFilter, int camIndex)
+BouleCamAudioPin::BouleCamAudioPin(IBaseFilter* pFilter, int camIndex)
     : m_pFilter(pFilter)
     , m_camIndex(camIndex) {
     m_shmConsumer.Open(camIndex);
@@ -1366,6 +1434,7 @@ STDMETHODIMP BouleCamAudioFilter::GetClassID(CLSID* pClassID) {
     if (!pClassID) return E_POINTER;
     if (m_camIndex == 2) *pClassID = CLSID_BouleCamAudioSource2;
     else if (m_camIndex == 3) *pClassID = CLSID_BouleCamAudioSource3;
+    else if (m_camIndex == 4) *pClassID = CLSID_BouleCamAudioSource4;
     else *pClassID = CLSID_BouleCamAudioSource;
     return S_OK;
 }
@@ -1433,9 +1502,14 @@ STDMETHODIMP BouleCamAudioFilter::FindPin(LPCWSTR Id, IPin** ppPin) {
 
 STDMETHODIMP BouleCamAudioFilter::QueryFilterInfo(FILTER_INFO* pInfo) {
     if (!pInfo) return E_POINTER;
-    if (m_camIndex == 2)      wcscpy_s(pInfo->achName, L"BouleCam Audio 2");
-    else if (m_camIndex == 3) wcscpy_s(pInfo->achName, L"BouleCam Audio 3");
-    else                      wcscpy_s(pInfo->achName, L"BouleCam Audio");
+    std::string devName = m_pPin ? m_pPin->GetDeviceName() : "";
+    if (!devName.empty()) {
+        wchar_t wideDev[64] = {0};
+        MultiByteToWideChar(CP_UTF8, 0, devName.c_str(), -1, wideDev, 63);
+        swprintf_s(pInfo->achName, L"BouleCam Audio (%s)", wideDev);
+    } else {
+        swprintf_s(pInfo->achName, L"BouleCam Audio (Cam %d)", m_camIndex);
+    }
     pInfo->pGraph = m_pGraph;
     if (pInfo->pGraph) pInfo->pGraph->AddRef();
     return S_OK;

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <mstcpip.h>
+#include <objbase.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -197,6 +198,14 @@ bool TcpReceiver::SwapClientIds(int camA, int camB) {
         if (hadLockB) { lockB.camId = camA; m_lockedSlots[camA] = lockB; } else { m_lockedSlots.erase(camA); }
         SaveLockedSlots();
     }
+
+    // Request immediate IDR keyframe from both swapped camera slots so their decoders resync cleanly
+    BouleCamCameraCmd kfCmd{};
+    kfCmd.magic = BOULECAM_MAGIC;
+    kfCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+    kfCmd.action = BOULECAM_ACTION_REQUEST_KEYFRAME;
+    SendCameraCommand(kfCmd, camA);
+    SendCameraCommand(kfCmd, camB);
 
     std::cout << "[TcpReceiver] Swapped/Reassigned client IDs: " << camA << " <-> " << camB << std::endl;
     return true;
@@ -547,6 +556,9 @@ bool TcpReceiver::ReceiveExact(SOCKET sock, uint8_t* destination, size_t bytesTo
 }
 
 void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, uint16_t clientPort) {
+    // Initialize COM in MTA mode on this dedicated client receiver/decoder thread for Media Foundation MFTs
+    HRESULT hrCom = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
     std::vector<uint8_t> payloadBuffer;
     payloadBuffer.reserve(1024 * 1024); // 1MB initial allocation
 
@@ -686,6 +698,13 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
                             relocated.id = newFreeId;
                             if (relocated.deviceIdRef) relocated.deviceIdRef->store(newFreeId);
                             m_clients[newFreeId] = relocated;
+                            if (relocated.socket != INVALID_SOCKET) {
+                                BouleCamCameraCmd kfCmd{};
+                                kfCmd.magic = BOULECAM_MAGIC;
+                                kfCmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+                                kfCmd.action = BOULECAM_ACTION_REQUEST_KEYFRAME;
+                                send(relocated.socket, (const char*)&kfCmd, sizeof(kfCmd), 0);
+                            }
                             std::cout << "[TcpReceiver] Relocated transient device from locked Cam " << assignedId 
                                       << " -> Cam " << newFreeId << std::endl;
 
@@ -900,6 +919,9 @@ void TcpReceiver::ClientThreadWorker(SOCKET clientSocket, std::string clientIp, 
         }
     }
     closesocket(clientSocket);
+    if (SUCCEEDED(hrCom)) {
+        CoUninitialize();
+    }
 }
 
 } // namespace boulecam

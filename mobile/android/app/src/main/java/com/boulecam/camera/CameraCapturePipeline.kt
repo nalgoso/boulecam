@@ -23,6 +23,7 @@ class CameraCapturePipeline(
     private var captureSession: CameraCaptureSession? = null
     private var currentRequestBuilder: CaptureRequest.Builder? = null
 
+    private var currentPreviewSurface: Surface? = previewSurface
     private var currentEncoderSurface: Surface = encoderSurface
     private var currentTargetResolution: Size = targetResolution
     private var currentTargetFps: Int = targetFps
@@ -115,6 +116,17 @@ class CameraCapturePipeline(
         recreateCaptureSession()
     }
 
+    fun updatePreviewSurface(newSurface: Surface?) {
+        currentPreviewSurface = newSurface
+        backgroundHandler?.post {
+            if (cameraDevice == null) {
+                openCamera()
+            } else {
+                recreateCaptureSession()
+            }
+        }
+    }
+
     private fun recreateCaptureSession() {
         val cameraId = getCameraId(currentLensFacing) ?: return
         try {
@@ -165,9 +177,10 @@ class CameraCapturePipeline(
 
     private fun createCaptureSession(cameraId: String) {
         val device = cameraDevice ?: return
+        val pSurf = currentPreviewSurface
         val surfaces = mutableListOf<Surface>(currentEncoderSurface)
-        if (previewSurface != null && previewSurface.isValid) {
-            surfaces.add(previewSurface)
+        if (pSurf != null && pSurf.isValid) {
+            surfaces.add(pSurf)
         }
 
         try {
@@ -186,8 +199,9 @@ class CameraCapturePipeline(
                     try {
                         val requestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                             addTarget(currentEncoderSurface)
-                            if (previewSurface != null && previewSurface.isValid) {
-                                addTarget(previewSurface)
+                            val activePreview = currentPreviewSurface
+                            if (activePreview != null && activePreview.isValid && surfaces.contains(activePreview)) {
+                                addTarget(activePreview)
                             }
                             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFpsRange)
                         }

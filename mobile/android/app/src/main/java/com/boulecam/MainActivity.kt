@@ -752,6 +752,9 @@ class MainActivity : AppCompatActivity() {
                         fpsTextView?.visibility = View.VISIBLE
                         // START / RESUME RECORDING ONLY WHEN CONNECTED TO PC
                         encoder?.setSuspended(false)
+                        encoder?.getCachedSpsPps()?.let { spsPps ->
+                            sender?.sendFrame(true, System.nanoTime() / 1000L, spsPps, physicalOrientationDegrees)
+                        }
                         encoder?.requestKeyFrame()
                         audioPipeline?.start()
                         sendCurrentTelemetry()
@@ -792,6 +795,9 @@ class MainActivity : AppCompatActivity() {
                     statusTextView?.setTextColor(COLOR_LIGHT_GREEN)
                 }
             }
+        }
+        sender?.onFrameDropped = {
+            encoder?.requestKeyFrame()
         }
         sender?.start()
 
@@ -835,10 +841,17 @@ class MainActivity : AppCompatActivity() {
         // 4. Initialize TextureView Surface Listener with AutoFit transform
         textureView?.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
-                surfaceTexture.setDefaultBufferSize(1920, 1080)
+                surfaceTexture.setDefaultBufferSize(currentConfiguredWidth, currentConfiguredHeight)
                 updatePreviewTransform()
-                previewSurface = Surface(surfaceTexture)
-                startCameraPipeline()
+                val newPreview = Surface(surfaceTexture)
+                previewSurface = newPreview
+                if (cameraPipeline != null) {
+                    cameraExecutor.execute {
+                        cameraPipeline?.updatePreviewSurface(newPreview)
+                    }
+                } else {
+                    startCameraPipeline()
+                }
             }
 
             override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
@@ -846,10 +859,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
-                cameraPipeline?.stop()
-                cameraPipeline = null
-                previewSurface?.release()
+                // Keep cameraPipeline running in background for uninterrupted multi-camera streaming!
+                // Detach only the UI preview surface so MediaCodec continues receiving frames.
+                val oldPreview = previewSurface
                 previewSurface = null
+                cameraExecutor.execute {
+                    cameraPipeline?.updatePreviewSurface(null)
+                    try { oldPreview?.release() } catch (_: Exception) {}
+                }
                 return true
             }
 
@@ -859,17 +876,20 @@ class MainActivity : AppCompatActivity() {
         if (textureView?.isAvailable == true) {
             val st = textureView!!.surfaceTexture
             if (st != null) {
-                st.setDefaultBufferSize(1920, 1080)
+                st.setDefaultBufferSize(currentConfiguredWidth, currentConfiguredHeight)
                 previewSurface = Surface(st)
                 updatePreviewTransform()
                 startCameraPipeline()
             }
+        } else {
+            // Start headless encoder pipeline even if activity started in background
+            startCameraPipeline()
         }
     }
 
     private fun startCameraPipeline() {
         val encSurface = encoder?.inputSurface ?: return
-        val pSurface = previewSurface ?: return
+        val pSurface = previewSurface
 
         cameraExecutor.execute {
             try {
@@ -878,6 +898,8 @@ class MainActivity : AppCompatActivity() {
                     context = this@MainActivity,
                     previewSurface = pSurface,
                     encoderSurface = encSurface,
+                    targetResolution = android.util.Size(currentConfiguredWidth, currentConfiguredHeight),
+                    targetFps = currentConfiguredFps,
                     onConfiguredCallback = {
                         runOnUiThread { updatePreviewTransform() }
                     }
@@ -934,6 +956,12 @@ class MainActivity : AppCompatActivity() {
                     btnDockMic?.imageTintList = ContextCompat.getColorStateList(
                         this, if (isMicEnabled) android.R.color.white else android.R.color.holo_red_light
                     )
+                }
+                9 -> { // BOULECAM_ACTION_REQUEST_KEYFRAME
+                    encoder?.getCachedSpsPps()?.let { spsPps ->
+                        sender?.sendFrame(true, System.nanoTime() / 1000L, spsPps, physicalOrientationDegrees)
+                    }
+                    encoder?.requestKeyFrame()
                 }
                 10 -> { // BOULECAM_ACTION_SET_DIM_SCREEN (0 = Normal, 1 = Dim)
                     setDimScreen(cmd.intParam1 != 0, notifyPeer = false)

@@ -19,7 +19,7 @@ extern "C" {
 #define BOULECAM_EVENT_FRAME_READ "Local\\BouleCam_Event_FrameRead_v1"
 #define BOULECAM_MUTEX_NAME      "Local\\BouleCam_Mutex_Cam1_v2"
 
-#define BOULECAM_MAX_CAM_SLOTS 3
+#define BOULECAM_MAX_CAM_SLOTS 4
 
 #define BOULECAM_MAX_FRAME_WIDTH  3840
 #define BOULECAM_MAX_FRAME_HEIGHT 2160
@@ -80,6 +80,9 @@ typedef struct BouleCamIpcHeader {
 
     // Active readers counter (incremented by DirectShow/MediaFoundation Virtual Camera when open/streaming)
     uint32_t active_readers_count;  // 0 = no apps reading, >0 = OBS/Zoom/Meet active
+
+    // Friendly device name of the phone/camera assigned to this slot (UTF-8, null-terminated)
+    char     device_name[64];
 } BouleCamIpcHeader;
 
 #pragma pack(pop)

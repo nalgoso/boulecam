@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -18,6 +19,7 @@ import com.boulecam.R
 class BouleCamStreamService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     companion object {
         const val CHANNEL_ID = "boulecam_streaming_channel"
@@ -48,7 +50,7 @@ class BouleCamStreamService : Service() {
         super.onCreate()
         createNotificationChannel()
 
-        // Acquire WakeLock to prevent CPU and network sleep on tripod
+        // Acquire WakeLock to prevent CPU sleep in background or on tripod
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
@@ -57,6 +59,21 @@ class BouleCamStreamService : Service() {
             setReferenceCounted(false)
             acquire(12 * 60 * 60 * 1000L) // 12 hours max safety
         }
+
+        // Acquire High-Performance / Low-Latency WifiLock so Wi-Fi never enters power-save mode in background
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifiManager?.createWifiLock(lockMode, "BouleCam:LowLatencyWifiLock")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (ignored: Exception) {}
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -84,6 +101,13 @@ class BouleCamStreamService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+        } catch (ignored: Exception) {}
+        wifiLock = null
+
         try {
             if (wakeLock?.isHeld == true) {
                 wakeLock?.release()

@@ -42,13 +42,14 @@ class StreamSender(
 
     fun isConnected(): Boolean = isConnected.get()
 
-    // Capacity 4: enough to buffer a couple of frames without stalling while still dropping stale ones
-    private val sendQueue = java.util.concurrent.ArrayBlockingQueue<ByteArray>(4)
+    // Capacity 32: absorbs Wi-Fi bursts & audio+video interleaving without dropping H.264 P-frames
+    private val sendQueue = java.util.concurrent.ArrayBlockingQueue<ByteArray>(32)
     private var workerThread: Thread? = null
     private val streamLock = Any()
 
     var onStatsUpdated: ((fps: Int, bitrateKbps: Int) -> Unit)? = null
     var onConnectionFailed: ((failedHost: String, failures: Int) -> Unit)? = null
+    var onFrameDropped: (() -> Unit)? = null
     private var framesSentInInterval = 0
     private var bytesSentInInterval = 0L
     private var lastStatsTimestamp = 0L
@@ -124,10 +125,11 @@ class StreamSender(
         System.arraycopy(headerBuffer.array(), 0, fullPacket, 0, 24)
         System.arraycopy(naluData, 0, fullPacket, 24, naluData.size)
 
-        // Ultra-low latency: drop stale frame if network is congested
+        // Ultra-low latency: drop stale frames if network is severely congested and request immediate IDR keyframe
         if (!sendQueue.offer(fullPacket)) {
-            sendQueue.poll()
+            sendQueue.clear()
             sendQueue.offer(fullPacket)
+            onFrameDropped?.invoke()
         }
 
         framesSentInInterval++
@@ -158,12 +160,8 @@ class StreamSender(
         System.arraycopy(headerBuffer.array(), 0, fullPacket, 0, 12)
         System.arraycopy(pcmData, 0, fullPacket, 12, size)
 
-        try {
-            synchronized(streamLock) {
-                outputStream?.write(fullPacket)
-                outputStream?.flush()
-            }
-        } catch (ignored: Exception) {}
+        // Enqueue onto lock-free sendQueue instead of blocking the real-time AudioRecord capture thread
+        sendQueue.offer(fullPacket)
     }
 
     private fun runNetworkLoop() {
@@ -188,11 +186,10 @@ class StreamSender(
                 if (performHandshake()) {
                     Log.i(TAG, "Handshake OK — streaming to $targetHost:$targetPort")
                     consecutiveFailures = 0
-
-                    // Only notify connected state once, and only if it actually changed
-                    if (!isConnected.getAndSet(true)) {
-                        onConnectionStateChanged(true)
-                    }
+                    // Flush any stale pre-connection P-frames so the new socket starts cleanly on SPS/PPS + IDR
+                    sendQueue.clear()
+                    isConnected.set(true)
+                    onConnectionStateChanged(true)
 
                     // Spawn reader for incoming desktop commands
                     val readerThread = Thread { readIncomingCommands(sock) }.apply {

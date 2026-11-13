@@ -27,6 +27,24 @@
         <span>Buscar Dispositivos</span>
       </button>
 
+      <!-- Selector / Botón de Proyección en Pantalla Completa -->
+      <div class="projector-container" id="projector-container">
+        <button class="btn-projector" id="btn-projector" title="Proyectar cámara en pantalla completa en un monitor o proyector">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          <span>Proyectar</span>
+          <span class="projector-active-dot" id="projector-active-dot" style="display:none;"></span>
+        </button>
+        <div class="projector-dropdown" id="projector-dropdown" style="display:none;">
+          <div class="projector-dropdown-header">Elegir monitor para proyectar:</div>
+          <div class="projector-displays-list" id="projector-displays-list"></div>
+          <button class="projector-close-btn" id="btn-projector-close" style="display:none;">❌ Detener Proyección</button>
+        </div>
+      </div>
+
       <button class="btn-settings" id="btn-settings" title="Ajustes de transmisión, entradas y conexión">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -50,8 +68,7 @@
       <div class="camera-selector-bar" id="camera-selector-bar">
         <div class="cam-tab active" data-cam-id="1">
           <span class="cam-tab-dot"></span>
-          <span class="cam-tab-name">📹 Cam 1</span>
-          <button class="cam-tab-obs-btn" title="Copiar URL para OBS" data-obs-url="http://127.0.0.1:8090/obs/1">📋 Copiar URL OBS</button>
+          <span class="cam-tab-name">📹 Esperando dispositivo...</span>
         </div>
       </div>
 
@@ -347,32 +364,40 @@
           </div>
         </div>
 
-        <!-- Sección de Integración OBS Studio con Tooltip compacto (ⓘ) -->
+        <!-- Sección de Integración OBS Studio / Zoom con dispositivos nombrados -->
         <div class="settings-group">
           <div class="settings-group-title" style="display:flex; align-items:center; justify-content:space-between;">
             <span style="display:flex; align-items:center; gap:6px;">
-              <span>🎥</span> OBS Studio / Streaming
+              <span>🎥</span> Dispositivos Virtuales (OBS / Zoom / vMix)
             </span>
             <!-- Circular i Tooltip con pasos para OBS -->
             <div class="tooltip-container" id="obs-tooltip-container">
-              <button type="button" class="tooltip-circle-btn" id="obs-tooltip-btn" aria-label="Instrucciones OBS" title="Ver pasos para configurar en OBS">ⓘ</button>
+              <button type="button" class="tooltip-circle-btn" id="obs-tooltip-btn" aria-label="Instrucciones OBS" title="Ver pasos para configurar en OBS o Zoom">ⓘ</button>
               <div class="tooltip-popover glass" id="obs-tooltip-popover">
-                <div class="tooltip-title">Pasos para conectar en OBS Studio:</div>
+                <div class="tooltip-title">Cómo elegir tu cámara en OBS o Zoom:</div>
                 <ol class="tooltip-steps">
-                  <li><b>Video:</b> Agrega <i>Dispositivo de captura de video</i> → Selecciona <b>"BouleCam Virtual Camera"</b>.</li>
-                  <li><b>Audio DirectShow (Aislado sin drivers):</b> En las opciones del video, marca <i>Usar dispositivo de audio personalizado</i> → <b>"BouleCam Audio"</b> (Modo: <i>Capturar solo audio</i>).</li>
-                  <li><b>Audio Nativo (Como fuente independiente):</b> Ejecuta <code>Instalar-Audio-Virtual.bat</code> y en OBS agrega <i>Captura de entrada de audio</i> → <b>"CABLE Output"</b>.</li>
+                  <li><b>Video + Audio integrados:</b> En OBS agrega <i>Dispositivo de captura de video</i> y elige <b>"BouleCam (Nombre de tu teléfono)"</b>. ¡Incluye video y audio automáticamente!</li>
+                  <li><b>Micrófono independiente (Zoom / Meet / OBS):</b> Si deseas elegir el micrófono por separado, selecciona <b>"BouleCam Audio (Nombre de tu teléfono)"</b>.</li>
+                  <li><b>Sin cámaras fantasma:</b> Solo aparecen en otros programas los teléfonos conectados o los que hayas vinculado con el candado (🔒).</li>
                 </ol>
-                <div class="tooltip-note">💡 Multi-cámara: Cada teléfono conectado alimenta su propia cámara nativa (Cam 1, Cam 2, Cam 3).</div>
+                <div class="tooltip-note">💡 Puedes cambiar el nombre del dispositivo con el botón ✏️ en la barra superior.</div>
               </div>
             </div>
           </div>
 
-          <!-- Opción Rápida: URL para Fuente de Navegador OBS -->
-          <div class="obs-input-row" style="margin-top:6px;">
-            <input type="text" id="input-obs-url" readonly value="http://127.0.0.1:8090/obs/1" spellcheck="false" />
-            <button class="obs-copy-btn" id="btn-copy-obs" title="Copiar enlace para fuente de navegador en OBS">📋 Copiar</button>
+          <div style="margin-top:6px; padding:10px 12px; background:rgba(0,229,255,0.06); border:1px solid rgba(0,229,255,0.18); border-radius:8px; font-size:0.8rem; color:#e2e8f0; line-height:1.45;">
+            <div>📹 <b>Cámara activa:</b> <span id="lbl-dshow-cam-name" style="color:var(--accent-cyan); font-weight:700;">BouleCam (Esperando...)</span></div>
+            <div style="margin-top:3px; font-size:0.74rem; color:var(--text-muted);">🎙️ Audio integrado en la cámara + entrada independiente <b id="lbl-dshow-audio-name" style="color:#cbd5e1;">BouleCam Audio</b></div>
           </div>
+
+          <!-- Opción alternativa cuasi oculta: Fuente de Navegador OBS -->
+          <details style="margin-top:8px; font-size:0.75rem; color:var(--text-muted);">
+            <summary style="cursor:pointer; user-select:none; opacity:0.75; padding:2px 0;">Configuración alternativa (Fuente de Navegador URL)</summary>
+            <div class="obs-input-row" style="margin-top:6px;">
+              <input type="text" id="input-obs-url" readonly value="http://127.0.0.1:8095/obs/1" spellcheck="false" />
+              <button class="obs-copy-btn" id="btn-copy-obs" title="Copiar enlace alternativo para fuente de navegador en OBS">📋 Copiar</button>
+            </div>
+          </details>
         </div>
 
       </div>
@@ -395,19 +420,19 @@
         <div class="modal-field">
           <label for="edit-cam-number">Número de Señal (Canal):</label>
           <select id="edit-cam-number" class="modal-select">
-            <option value="1">Cam 1 (Señal principal / OBS 1)</option>
-            <option value="2">Cam 2 (Señal secundaria / OBS 2)</option>
-            <option value="3">Cam 3 (Señal auxiliar / OBS 3)</option>
-            <option value="4">Cam 4 (OBS 4)</option>
+            <option value="1">Cam 1 (Canal 1)</option>
+            <option value="2">Cam 2 (Canal 2)</option>
+            <option value="3">Cam 3 (Canal 3)</option>
+            <option value="4">Cam 4 (Canal 4)</option>
           </select>
           <small style="color:var(--text-muted); font-size:0.75rem; margin-top:5px; display:block;">
-            💡 Si eliges un número ya en uso, se intercambiarán automáticamente las señales para corregir el orden sin cortar OBS.
+            💡 Si eliges un canal ya en uso, se intercambiarán automáticamente las señales sin cortar OBS ni Zoom.
           </small>
         </div>
 
         <div class="modal-field" style="margin-top:14px;">
-          <label for="edit-cam-name">Nombre descriptivo:</label>
-          <input type="text" id="edit-cam-name" class="modal-input" placeholder="Ej: Púlpito, Piano, General..." maxlength="30" />
+          <label for="edit-cam-name">Nombre del dispositivo (visible en OBS / Zoom):</label>
+          <input type="text" id="edit-cam-name" class="modal-input" placeholder="Ej: Motorola, Redmi Note 13, Púlpito..." maxlength="30" />
         </div>
 
         <div class="modal-field" style="margin-top:14px;">
@@ -419,9 +444,9 @@
           <label class="modal-checkbox-row">
             <input type="checkbox" id="edit-cam-lock" />
             <div>
-              <div style="font-weight:600; font-size:0.85rem; color:#fff;">🔒 Bloquear permanentemente esta URL a este teléfono</div>
+              <div style="font-weight:600; font-size:0.85rem; color:#fff;">🔒 Mantener vinculado este dispositivo permanentemente</div>
               <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">
-                Garantiza que la URL nunca se asignará a otro dispositivo y este teléfono siempre recuperará su señal fija al reconectarse.
+                Mantiene registrada su cámara <b>BouleCam (Nombre)</b> en OBS/Zoom aunque se desconecte y le reserva siempre este canal fijo al reconectarse.
               </div>
             </div>
           </label>

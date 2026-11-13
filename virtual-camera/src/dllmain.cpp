@@ -19,6 +19,9 @@ static const wchar_t* g_wszAudioCam2Clsid    = L"{6B47C021-85A4-4D6C-9A52-2A1E7F
 // Camera 3
 static const wchar_t* g_wszVideoCam3Clsid    = L"{6B47C012-85A4-4D6C-9A52-2A1E7F19D3B1}";
 static const wchar_t* g_wszAudioCam3Clsid    = L"{6B47C022-85A4-4D6C-9A52-2A1E7F19D3B1}";
+// Camera 4
+static const wchar_t* g_wszVideoCam4Clsid    = L"{6B47C013-85A4-4D6C-9A52-2A1E7F19D3B1}";
+static const wchar_t* g_wszAudioCam4Clsid    = L"{6B47C023-85A4-4D6C-9A52-2A1E7F19D3B1}";
 
 // Media Foundation Virtual Camera Source
 static const wchar_t* g_wszMFVideoCamClsid   = L"{6B47C030-85A4-4D6C-9A52-2A1E7F19D3B1}";
@@ -34,6 +37,8 @@ static const wchar_t* g_wszVideoCam2Name = L"BouleCam Virtual Camera 2";
 static const wchar_t* g_wszAudioCam2Name = L"BouleCam Audio 2";
 static const wchar_t* g_wszVideoCam3Name = L"BouleCam Virtual Camera 3";
 static const wchar_t* g_wszAudioCam3Name = L"BouleCam Audio 3";
+static const wchar_t* g_wszVideoCam4Name = L"BouleCam Virtual Camera 4";
+static const wchar_t* g_wszAudioCam4Name = L"BouleCam Audio 4";
 
 HMODULE g_hModule = NULL;
 
@@ -137,6 +142,18 @@ extern "C" __declspec(dllexport) HRESULT STDAPICALLTYPE DllGetClassObject(REFCLS
         pFactory->Release();
         return hr;
     }
+    // Cam 4
+    else if (IsEqualCLSID(rclsid, boulecam::CLSID_BouleCamVirtualCam4)) {
+        GenericClassFactory* pFactory = new GenericClassFactory(GenericClassFactory::TYPE_VIDEO, 4);
+        HRESULT hr = pFactory->QueryInterface(riid, ppv);
+        pFactory->Release();
+        return hr;
+    } else if (IsEqualCLSID(rclsid, boulecam::CLSID_BouleCamAudioSource4)) {
+        GenericClassFactory* pFactory = new GenericClassFactory(GenericClassFactory::TYPE_AUDIO, 4);
+        HRESULT hr = pFactory->QueryInterface(riid, ppv);
+        pFactory->Release();
+        return hr;
+    }
     // Media Foundation Virtual Camera Source
     else if (IsEqualCLSID(rclsid, boulecam::CLSID_BouleCamMFVirtualCam)) {
         boulecam::VirtualCameraClassFactory* pFactory = new boulecam::VirtualCameraClassFactory();
@@ -182,13 +199,12 @@ static const unsigned char g_audioFilterData[] = {
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71  // MEDIASUBTYPE_PCM
 };
 
-static void RegisterDevice(HKEY rootKey, const wchar_t* clsidStr, const wchar_t* categoryStr,
-                           const wchar_t* friendlyName, const wchar_t* dllPath,
-                           const unsigned char* filterData, DWORD filterDataSize) {
+static void RegisterComServerOnly(HKEY rootKey, const wchar_t* clsidStr, const wchar_t* categoryStr,
+                                  const wchar_t* friendlyName, const wchar_t* dllPath) {
     wchar_t szKey[512];
     HKEY hKey = NULL;
 
-    // 1. Register COM CLSID InprocServer32
+    // 1. Register COM CLSID InprocServer32 so DirectShow can instantiate the filter when dynamically enabled
     wsprintfW(szKey, L"Software\\Classes\\CLSID\\%s", clsidStr);
     if (RegCreateKeyExW(rootKey, szKey, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExW(hKey, NULL, 0, REG_SZ, (const BYTE*)friendlyName, (DWORD)((wcslen(friendlyName) + 1) * sizeof(wchar_t)));
@@ -203,18 +219,11 @@ static void RegisterDevice(HKEY rootKey, const wchar_t* clsidStr, const wchar_t*
         RegCloseKey(hKey);
     }
 
-    // 2. Register DirectShow Device Category Instance strictly under clsidStr
+    // 2. Remove static category Instance keys so phantom/unconnected cameras never appear in OBS/Zoom.
+    // Active/linked cameras are dynamically registered in HKCU Instance by boulecam-desktop.exe!
     wsprintfW(szKey, L"Software\\Classes\\CLSID\\%s\\Instance\\%s", categoryStr, clsidStr);
-    if (RegCreateKeyExW(rootKey, szKey, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(hKey, L"FriendlyName", 0, REG_SZ, (const BYTE*)friendlyName, (DWORD)((wcslen(friendlyName) + 1) * sizeof(wchar_t)));
-        RegSetValueExW(hKey, L"CLSID", 0, REG_SZ, (const BYTE*)clsidStr, (DWORD)((wcslen(clsidStr) + 1) * sizeof(wchar_t)));
-        if (filterData && filterDataSize > 0) {
-            RegSetValueExW(hKey, L"FilterData", 0, REG_BINARY, filterData, filterDataSize);
-        }
-        RegCloseKey(hKey);
-    }
+    RegDeleteKeyW(rootKey, szKey);
 
-    // Explicitly delete any legacy key named after friendlyName to prevent duplicate entries in OBS
     wsprintfW(szKey, L"Software\\Classes\\CLSID\\%s\\Instance\\%s", categoryStr, friendlyName);
     RegDeleteKeyW(rootKey, szKey);
 }
@@ -234,19 +243,19 @@ static void UnregisterDevice(HKEY rootKey, const wchar_t* clsidStr, const wchar_
     RegDeleteKeyW(rootKey, szKey);
 }
 
-// Helper to register clean, unified camera sources without cluttering external device lists
+// Helper to register COM servers for all 4 multi-camera video & audio DirectShow sources
 static void RegisterAllCams(HKEY rootKey, const wchar_t* dllPath) {
-    // 1. DirectShow Primary Video Device (OBS Studio, vMix, Zoom, Discord)
-    RegisterDevice(rootKey, g_wszVideoCam1Clsid, g_wszVideoCategory, g_wszVideoCam1Name, dllPath, g_videoFilterData, sizeof(g_videoFilterData));
-    
-    // 2. DirectShow Primary Audio Device
-    RegisterDevice(rootKey, g_wszAudioCam1Clsid, g_wszAudioCategory, g_wszAudioCam1Name, dllPath, g_audioFilterData, sizeof(g_audioFilterData));
+    RegisterComServerOnly(rootKey, g_wszVideoCam1Clsid, g_wszVideoCategory, g_wszVideoCam1Name, dllPath);
+    RegisterComServerOnly(rootKey, g_wszVideoCam2Clsid, g_wszVideoCategory, g_wszVideoCam2Name, dllPath);
+    RegisterComServerOnly(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name, dllPath);
+    RegisterComServerOnly(rootKey, g_wszVideoCam4Clsid, g_wszVideoCategory, g_wszVideoCam4Name, dllPath);
 
-    // Clean up auxiliary/stale camera slots and legacy categories to prevent clutter in external device lists
-    UnregisterDevice(rootKey, g_wszVideoCam2Clsid, g_wszVideoCategory, g_wszVideoCam2Name);
-    UnregisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name);
-    UnregisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name);
-    UnregisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name);
+    RegisterComServerOnly(rootKey, g_wszAudioCam1Clsid, g_wszAudioCategory, g_wszAudioCam1Name, dllPath);
+    RegisterComServerOnly(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name, dllPath);
+    RegisterComServerOnly(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name, dllPath);
+    RegisterComServerOnly(rootKey, g_wszAudioCam4Clsid, g_wszAudioCategory, g_wszAudioCam4Name, dllPath);
+
+    // Clean up legacy Media Foundation duplicate entries
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, L"BouleCam Virtual Camera (Media Foundation)");
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName);
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName);
@@ -259,6 +268,8 @@ static void UnregisterAllCams(HKEY rootKey) {
     UnregisterDevice(rootKey, g_wszAudioCam2Clsid, g_wszAudioCategory, g_wszAudioCam2Name);
     UnregisterDevice(rootKey, g_wszVideoCam3Clsid, g_wszVideoCategory, g_wszVideoCam3Name);
     UnregisterDevice(rootKey, g_wszAudioCam3Clsid, g_wszAudioCategory, g_wszAudioCam3Name);
+    UnregisterDevice(rootKey, g_wszVideoCam4Clsid, g_wszVideoCategory, g_wszVideoCam4Name);
+    UnregisterDevice(rootKey, g_wszAudioCam4Clsid, g_wszAudioCategory, g_wszAudioCam4Name);
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, L"BouleCam Virtual Camera (Media Foundation)");
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszVideoCategory, g_wszMFVideoCamName);
     UnregisterDevice(rootKey, g_wszMFVideoCamClsid, g_wszKSCategoryCamera, g_wszMFVideoCamName);

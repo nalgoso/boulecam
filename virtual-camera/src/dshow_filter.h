@@ -37,6 +37,14 @@ DEFINE_GUID(CLSID_BouleCamVirtualCam3,
 DEFINE_GUID(CLSID_BouleCamAudioSource3,
     0x6b47c022, 0x85a4, 0x4d6c, 0x9a, 0x52, 0x2a, 0x1e, 0x7f, 0x19, 0xd3, 0xb1);
 
+// Cam 4 — Video: {6B47C013-85A4-4D6C-9A52-2A1E7F19D3B1}
+DEFINE_GUID(CLSID_BouleCamVirtualCam4,
+    0x6b47c013, 0x85a4, 0x4d6c, 0x9a, 0x52, 0x2a, 0x1e, 0x7f, 0x19, 0xd3, 0xb1);
+
+// Cam 4 — Audio: {6B47C023-85A4-4D6C-9A52-2A1E7F19D3B1}
+DEFINE_GUID(CLSID_BouleCamAudioSource4,
+    0x6b47c023, 0x85a4, 0x4d6c, 0x9a, 0x52, 0x2a, 0x1e, 0x7f, 0x19, 0xd3, 0xb1);
+
 // Media Foundation Virtual Camera Source: {6B47C030-85A4-4D6C-9A52-2A1E7F19D3B1}
 DEFINE_GUID(CLSID_BouleCamMFVirtualCam,
     0x6b47c030, 0x85a4, 0x4d6c, 0x9a, 0x52, 0x2a, 0x1e, 0x7f, 0x19, 0xd3, 0xb1);
@@ -100,6 +108,7 @@ public:
     // Streaming Thread
     void StartStreaming();
     void StopStreaming();
+    std::string GetDeviceName() const { return m_shmConsumer.GetDeviceName(); }
 
 private:
     void StreamingWorker();
@@ -165,6 +174,7 @@ private:
     IReferenceClock* m_pClock = nullptr;
     IFilterGraph* m_pGraph = nullptr;
     BouleCamVideoPin* m_pPin = nullptr;
+    BouleCamAudioPin* m_pAudioPin = nullptr;
     std::mutex m_filterMutex;
     int m_camIndex = 1;
 };
@@ -177,7 +187,7 @@ class BouleCamAudioPin : public IPin,
                          public IAMStreamConfig,
                          public IKsPropertySet {
 public:
-    BouleCamAudioPin(BouleCamAudioFilter* pFilter, int camIndex = 1);
+    BouleCamAudioPin(IBaseFilter* pFilter, int camIndex = 1);
     virtual ~BouleCamAudioPin();
 
     // IUnknown
@@ -215,12 +225,13 @@ public:
 
     void StartStreaming();
     void StopStreaming();
+    std::string GetDeviceName() const { return m_shmConsumer.GetDeviceName(); }
 
 private:
     void StreamingWorker();
 
     std::atomic<ULONG> m_cRef{1};
-    BouleCamAudioFilter* m_pFilter = nullptr;
+    IBaseFilter* m_pFilter = nullptr;
     IPin* m_pConnectedPin = nullptr;
     IMemInputPin* m_pMemInputPin = nullptr;
     IMemAllocator* m_pAllocator = nullptr;

@@ -1,6 +1,6 @@
 // BouleCam Studio Pro UI Renderer Logic
 
-const API_BASE = 'http://127.0.0.1:8090';
+const API_BASE = 'http://127.0.0.1:8095';
 
 // Persistent Individual Camera Profiles (Storage per device/ID)
 const DEFAULT_CAM_SETTINGS = {
@@ -404,21 +404,29 @@ function applyVideoTransform() {
 
 function updateObsBox(camId) {
   const inputObsUrl = document.getElementById('input-obs-url');
+  const lblDshowCam = document.getElementById('lbl-dshow-cam-name');
+  const lblDshowAudio = document.getElementById('lbl-dshow-audio-name');
   const obsCamBadge = document.getElementById('obs-cam-badge');
   const obsLockBadge = document.getElementById('obs-lock-badge');
   const settingsObsCamBadge = document.getElementById('settings-obs-cam-badge');
   if (inputObsUrl) {
-    // Clean, permanent URL: automatically syncs mirror, rotation, mic and lens live in real-time
     inputObsUrl.value = `${API_BASE}/obs/${camId}`;
   }
   const dev = (lastDevicesList || []).find(d => d.id === camId);
   const displayName = getDeviceDisplayName(camId, dev);
+  const hasRealDevice = !!(dev && (dev.connected !== false || dev.isLocked));
+  if (lblDshowCam) {
+    lblDshowCam.textContent = hasRealDevice ? `BouleCam (${displayName})` : 'Sin dispositivos vinculados o activos';
+  }
+  if (lblDshowAudio) {
+    lblDshowAudio.textContent = hasRealDevice ? `BouleCam Audio (${displayName})` : 'BouleCam Audio';
+  }
   const label = (displayName && displayName !== `Cam ${camId}`) ? `Cam ${camId} (${displayName})` : `Cam ${camId}`;
   if (obsCamBadge) obsCamBadge.textContent = label;
   if (settingsObsCamBadge) settingsObsCamBadge.textContent = label;
   if (obsLockBadge) {
     if (dev && dev.isLocked) {
-      obsLockBadge.textContent = '🔒 Bloqueada';
+      obsLockBadge.textContent = '🔒 Vinculada';
       obsLockBadge.style.color = '#fef08a';
       obsLockBadge.style.borderColor = 'rgba(234, 179, 8, 0.4)';
       obsLockBadge.style.background = 'rgba(234, 179, 8, 0.15)';
@@ -577,7 +585,7 @@ function setupModals() {
       } catch (e) {}
 
       closeEditModal();
-      showToast(`✓ Señal guardada como Cam ${newNum}${isLockedCheck ? ' (Bloqueada 🔒)' : ''}`);
+      showToast(`✓ Dispositivo guardado como BouleCam (${finalName})${isLockedCheck ? ' 🔒' : ''}`);
       pollStatus();
     });
   }
@@ -687,11 +695,23 @@ function openUnlinkModal(camId) {
 }
 
 let lastRenderedTabsFingerprint = '';
+const syncedBackendCustomNames = new Map();
 
 // Render dynamic camera selector tabs
 function renderDeviceTabs(devices, activeId) {
   if (!cameraSelectorBar) return;
   lastDevicesList = devices || [];
+
+  // Sync any saved custom name in localStorage to C++ backend so DirectShow registry matches immediately
+  for (const d of lastDevicesList) {
+    if (d && d.id && d.uniqueId && customCamNames[d.uniqueId]) {
+      const wantedName = customCamNames[d.uniqueId].trim();
+      if (wantedName && d.name !== wantedName && syncedBackendCustomNames.get(d.id) !== wantedName) {
+        syncedBackendCustomNames.set(d.id, wantedName);
+        fetch(`${API_BASE}/api/rename_cam?cam=${d.id}&name=${encodeURIComponent(wantedName)}`, { method: 'POST' }).catch(() => {});
+      }
+    }
+  }
 
   let availableDevices = (devices || []).filter(d => !unlinkedCamIds.has(d.id));
 
@@ -725,7 +745,7 @@ function renderDeviceTabs(devices, activeId) {
     cameraSelectorBar.innerHTML = `
       <div class="cam-tab active" data-cam-id="1">
         <span class="cam-tab-dot" style="background:var(--accent-orange); box-shadow:none;"></span>
-        <span class="cam-tab-name">📹 Cam 1 (Sin señal)</span>
+        <span class="cam-tab-name">📹 Esperando dispositivo...</span>
       </div>
     `;
     updateObsBox(1);
@@ -744,13 +764,13 @@ function renderDeviceTabs(devices, activeId) {
     const lockBadge = isLocked ? ' 🔒' : '';
 
     return `
-      <div class="cam-tab ${isActive ? 'active' : ''} ${isLocked ? 'locked' : ''} ${isOffline ? 'offline' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal Bloqueada: URL fija a este dispositivo' : 'Señal Dinámica'}">
+      <div class="cam-tab ${isActive ? 'active' : ''} ${isLocked ? 'locked' : ''} ${isOffline ? 'offline' : ''}" data-cam-id="${d.id}" title="Dispositivo en OBS / Zoom: BouleCam (${name})">
         <span class="cam-tab-dot"></span>
-        <span class="cam-tab-name">📹 Cam ${d.id}: ${name}${bTag}${offlineSuffix}${isVert}${lockBadge}</span>
+        <span class="cam-tab-name">📹 ${name}${bTag}${offlineSuffix}${isVert}${lockBadge}</span>
         <div class="cam-tab-actions">
-          <button class="cam-tab-lock-btn ${isLocked ? 'locked' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Señal bloqueada permanentemente a este dispositivo. Clic para desbloquear' : 'Bloquear permanentemente esta URL a este dispositivo'}">${isLocked ? '🔒' : '🔓'}</button>
-          <button class="cam-tab-edit-btn" data-cam-id="${d.id}" title="Configurar y renombrar señal (1, 2, 3...)">✏️</button>
-          <button class="cam-tab-close-btn" data-cam-id="${d.id}" title="Desvincular este dispositivo">✕</button>
+          <button class="cam-tab-lock-btn ${isLocked ? 'locked' : ''}" data-cam-id="${d.id}" title="${isLocked ? 'Dispositivo vinculado permanentemente (visible siempre en OBS/Zoom). Clic para desvincular fijación' : 'Mantener vinculado permanentemente este dispositivo en OBS/Zoom'}">${isLocked ? '🔒' : '🔓'}</button>
+          <button class="cam-tab-edit-btn" data-cam-id="${d.id}" title="Renombrar dispositivo o cambiar orden de canal">✏️</button>
+          <button class="cam-tab-close-btn" data-cam-id="${d.id}" title="Desconectar y quitar este dispositivo">✕</button>
         </div>
       </div>
     `;
@@ -792,7 +812,7 @@ function renderDeviceTabs(devices, activeId) {
         const resp = await fetch(`${API_BASE}/api/lock_cam?cam=${id}&lock=${newLockState ? 1 : 0}&uid=${encodeURIComponent(devUid)}&name=${encodeURIComponent(devName)}`, { method: 'POST' });
         const resJson = await resp.json().catch(() => ({ status: 'error' }));
         if (resJson.status === 'ok') {
-          showToast(newLockState ? `🔒 Cam ${id} bloqueada permanentemente a ${devName}` : `🔓 Cam ${id} desbloqueada (dinámica)`);
+          showToast(newLockState ? `🔒 BouleCam (${devName}) vinculada permanentemente` : `🔓 BouleCam (${devName}) en modo dinámico (solo visible al conectarse)`);
         } else {
           showToast('Error al actualizar bloqueo');
         }
@@ -904,14 +924,14 @@ function updateUIStatus(data) {
   if (curDev && !curDevIsOnline && curDev.isLocked && !isConnected && !hasRecentFrames) {
     statusDot.classList.remove('connected');
     const devName = getDeviceDisplayName(curDev.id, curDev);
-    statusText.textContent = `Cam ${curDev.id} reservada (Esperando a ${devName} 🔒)`;
+    statusText.textContent = `Esperando a ${devName} 🔒`;
     statusText.style.color = '#eab308';
     liveStreamImg.style.display = 'none';
     placeholderBox.style.display = 'flex';
     const h3 = placeholderBox.querySelector('h3');
     const p = placeholderBox.querySelector('p');
-    if (h3) h3.textContent = `Cam ${curDev.id} Bloqueada y Reservada`;
-    if (p) p.textContent = `Esperando reconexión de ${devName}. Su URL (/obs/${curDev.id}) está protegida y no se asignará a otro dispositivo.`;
+    if (h3) h3.textContent = `BouleCam (${devName}) — Vinculada`;
+    if (p) p.textContent = `Esperando reconexión de ${devName}. Su cámara BouleCam (${devName}) se mantiene lista en OBS y Zoom.`;
     if (badgeDevice) badgeDevice.textContent = `${devName} (En espera 🔒)`;
     if (badgeFps) badgeFps.textContent = `-- FPS`;
     if (badgeLatency) badgeLatency.textContent = `-- ms`;
@@ -1487,6 +1507,9 @@ function setupEvents() {
 
   // Initial load
   applyActiveConfigToUI(false);
+
+  // Setup Projector System
+  setupProjectorEvents();
 }
 
 let currentSmoothedAudioLevel = 0;
@@ -1582,6 +1605,145 @@ async function fastPollAudioLevel() {
   } finally {
     isFastPollingAudio = false;
   }
+}
+
+// ========================================================
+// FULLSCREEN MONITOR PROJECTOR SYSTEM
+// ========================================================
+function setupProjectorEvents() {
+  const btnProjector = document.getElementById('btn-projector');
+  const projectorDropdown = document.getElementById('projector-dropdown');
+  const displaysList = document.getElementById('projector-displays-list');
+  const btnClose = document.getElementById('btn-projector-close');
+  const activeDot = document.getElementById('projector-active-dot');
+
+  if (!btnProjector || !projectorDropdown || !displaysList) return;
+
+  if (!window.boulecam || !window.boulecam.getDisplays) {
+    btnProjector.style.display = 'none';
+    return;
+  }
+
+  let isDropdownOpen = false;
+  let activeDisplayId = null;
+
+  async function updateProjectorStateUI(state) {
+    if (!state) {
+      try {
+        state = await window.boulecam.getProjectorState();
+      } catch (e) {
+        state = { active: false };
+      }
+    }
+    const isActive = !!(state && state.active);
+    activeDisplayId = isActive ? state.displayId : null;
+
+    btnProjector.classList.toggle('active', isActive);
+    if (activeDot) activeDot.style.display = isActive ? 'inline-block' : 'none';
+    if (btnClose) btnClose.style.display = isActive ? 'block' : 'none';
+  }
+
+  async function renderDisplaysMenu() {
+    displaysList.innerHTML = '<div style="padding:10px;text-align:center;color:#94a3b8;font-size:0.75rem;">Detectando pantallas...</div>';
+    try {
+      const displays = await window.boulecam.getDisplays();
+      const state = await window.boulecam.getProjectorState();
+      await updateProjectorStateUI(state);
+
+      if (!displays || displays.length === 0) {
+        displaysList.innerHTML = '<div style="padding:10px;text-align:center;color:#94a3b8;font-size:0.75rem;">No se detectaron pantallas.</div>';
+        return;
+      }
+
+      displaysList.innerHTML = '';
+      displays.forEach((d) => {
+        const item = document.createElement('div');
+        item.className = 'projector-display-item';
+        const isCurrentActive = activeDisplayId === d.id;
+        if (isCurrentActive) {
+          item.classList.add('active-projector');
+        }
+
+        const subInfo = (d.screenNumber && !d.name.startsWith('Pantalla '))
+          ? `Pantalla ${d.screenNumber} • ${d.resolution}`
+          : d.resolution;
+
+        item.innerHTML = `
+          <div class="display-info">
+            <div class="display-title">
+              <span>🖥️</span>
+              <span>${d.name}</span>
+            </div>
+            <div class="display-res">${subInfo}</div>
+          </div>
+          <span class="display-badge">${isCurrentActive ? 'PROYECTANDO' : (d.isPrimary ? 'Principal' : 'Monitor')}</span>
+        `;
+
+        item.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          projectorDropdown.style.display = 'none';
+          isDropdownOpen = false;
+          try {
+            const res = await window.boulecam.toggleProjector({ displayId: d.id, camId: activeCamId });
+            await updateProjectorStateUI(res);
+            if (res.active) {
+              showToast(`🖥️ Proyectando en ${d.name} a pantalla completa (ESC para salir)`);
+            } else {
+              showToast(`⏹️ Proyección finalizada`);
+            }
+          } catch (err) {
+            console.error('Error toggling projector:', err);
+          }
+        });
+
+        displaysList.appendChild(item);
+      });
+    } catch (err) {
+      displaysList.innerHTML = '<div style="padding:10px;color:#f87171;font-size:0.75rem;">Error al leer pantallas.</div>';
+    }
+  }
+
+  btnProjector.addEventListener('click', (e) => {
+    e.stopPropagation();
+    isDropdownOpen = !isDropdownOpen;
+    projectorDropdown.style.display = isDropdownOpen ? 'block' : 'none';
+    if (isDropdownOpen) {
+      renderDisplaysMenu();
+    }
+  });
+
+  if (btnClose) {
+    btnClose.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      projectorDropdown.style.display = 'none';
+      isDropdownOpen = false;
+      if (activeDisplayId !== null) {
+        const res = await window.boulecam.toggleProjector({ displayId: activeDisplayId, camId: activeCamId });
+        await updateProjectorStateUI(res);
+        showToast('⏹️ Proyección detenida');
+      }
+    });
+  }
+
+  projectorDropdown.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  // Cerrar menú al hacer clic fuera
+  document.addEventListener('click', (e) => {
+    if (isDropdownOpen && !btnProjector.contains(e.target) && !projectorDropdown.contains(e.target)) {
+      projectorDropdown.style.display = 'none';
+      isDropdownOpen = false;
+    }
+  });
+
+  if (window.boulecam.onProjectorStateChanged) {
+    window.boulecam.onProjectorStateChanged((state) => {
+      updateProjectorStateUI(state);
+    });
+  }
+
+  updateProjectorStateUI();
 }
 
 // Start polling

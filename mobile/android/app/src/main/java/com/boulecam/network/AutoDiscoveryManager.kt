@@ -172,7 +172,7 @@ class AutoDiscoveryManager(
 
     /**
      * Backup TCP Subnet Scanner.
-     * Sweeps candidate IPs on port 8090 with verified HTTP handshake
+     * Sweeps candidate IPs on port 8095 with verified HTTP handshake
      * in case UDP is completely blocked by PC-side firewall rules.
      */
     private fun subnetScannerLoop() {
@@ -224,10 +224,10 @@ class AutoDiscoveryManager(
                             try {
                                 if (!foundSignal.get()) {
                                     var verified = false
-                                    // Probe HTTP control port 8090 with verification
+                                    // Probe HTTP control port 8095 with verification
                                     try {
                                         val sockHttp = Socket()
-                                        sockHttp.connect(InetSocketAddress(targetIp, 8090), 450)
+                                        sockHttp.connect(InetSocketAddress(targetIp, 8095), 450)
                                         sockHttp.soTimeout = 600
 
                                         // Verify BouleCam signature
@@ -248,7 +248,7 @@ class AutoDiscoveryManager(
                                     } catch (ignored: Exception) {}
 
                                     if (verified && !foundSignal.getAndSet(true)) {
-                                        Log.i(TAG, "Discovered and verified BouleCam PC on port 8090: $targetIp:8088")
+                                        Log.i(TAG, "Discovered and verified BouleCam PC on port 8095: $targetIp:8088")
                                         reportWifiDevice(targetIp, 8088, "BouleCam PC ($targetIp)")
                                     }
                                 }

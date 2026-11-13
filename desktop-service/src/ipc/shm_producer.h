@@ -42,6 +42,7 @@ public:
     // Audio control — written into SHM and consumed by the virtual-camera DLL in real-time
     void SetAudioMuted(bool muted);
     void SetAudioGainDb(float gainDb); // e.g. 0.0 = unity, +6.0 = double, -12.0 = quarter
+    void SetDeviceName(const std::string& name);
 
     uint32_t GetActiveReadersCount() const {
         return m_pIpcHeader ? m_pIpcHeader->active_readers_count : 0;

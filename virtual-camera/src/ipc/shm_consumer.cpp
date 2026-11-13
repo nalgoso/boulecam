@@ -110,6 +110,14 @@ float ShmConsumer::GetAudioGainDb() const {
     return static_cast<float>(m_pIpcHeader->audio_gain_db_x100) / 100.0f;
 }
 
+std::string ShmConsumer::GetDeviceName() const {
+    if (!m_pIpcHeader || m_pIpcHeader->device_name[0] == '\0') return "";
+    char buf[65];
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf, m_pIpcHeader->device_name, 64);
+    return std::string(buf);
+}
+
 bool ShmConsumer::ReadLatestFrame(uint8_t* pDestBuffer,
                                   uint32_t destBufferSize,
                                   uint32_t& outWidth,
@@ -152,26 +160,60 @@ bool ShmConsumer::ReadLatestAudio(uint8_t* pDestBuffer, uint32_t destBufferSize,
         if (!Open(m_camIndex)) return false;
     }
 
-    uint32_t len = m_pIpcHeader->audio_data_len;
-    if (len == 0 || len > destBufferSize) return false;
+    if (m_pIpcHeader->is_streaming_active == 0) {
+        m_audioReadInitialized = false;
+        return false;
+    }
 
     outSampleRate = m_pIpcHeader->audio_sample_rate > 0 ? m_pIpcHeader->audio_sample_rate : 48000;
     outChannels   = m_pIpcHeader->audio_channels   > 0 ? m_pIpcHeader->audio_channels   : 1;
-    outSize       = len;
 
-    // Read the most recent packet from the ring buffer
-    uint32_t writePos = m_pIpcHeader->audio_write_pos;
-    if (writePos >= len) {
-        memcpy(pDestBuffer, m_pIpcHeader->audio_data + writePos - len, len);
-    } else {
-        uint32_t fromEnd = len - writePos;
-        memcpy(pDestBuffer, m_pIpcHeader->audio_data + 65536 - fromEnd, fromEnd);
-        memcpy(pDestBuffer + fromEnd, m_pIpcHeader->audio_data, writePos);
+    uint32_t writePos = m_pIpcHeader->audio_write_pos % 65536;
+    uint32_t writeSeq = m_pIpcHeader->audio_write_seq;
+
+    if (!m_audioReadInitialized) {
+        m_audioReadPos = writePos;
+        m_lastAudioWriteSeq = writeSeq;
+        m_audioReadInitialized = true;
+        return false;
     }
+
+    // Calculate unread bytes available in the 65536-byte circular ring buffer
+    uint32_t avail = (writePos + 65536 - m_audioReadPos) % 65536;
+    if (avail == 0) {
+        return false;
+    }
+
+    // If reader fell behind by more than ~160ms (15360 bytes), resync to most recent frame
+    if (avail > 15360) {
+        uint32_t keep = (destBufferSize <= 3840) ? destBufferSize : 1920;
+        m_audioReadPos = (writePos + 65536 - keep) % 65536;
+        avail = keep;
+    }
+
+    // Wait until we have at least a full 20ms quantum (destBufferSize) unless buffer is larger
+    uint32_t toRead = (avail > destBufferSize) ? destBufferSize : avail;
+    toRead &= ~1u; // Keep 16-bit PCM sample alignment (even byte count)
+    if (toRead == 0) {
+        return false;
+    }
+
+    outSize = toRead;
+
+    if (m_audioReadPos + toRead <= 65536) {
+        memcpy(pDestBuffer, m_pIpcHeader->audio_data + m_audioReadPos, toRead);
+    } else {
+        uint32_t firstPart = 65536 - m_audioReadPos;
+        memcpy(pDestBuffer, m_pIpcHeader->audio_data + m_audioReadPos, firstPart);
+        memcpy(pDestBuffer + firstPart, m_pIpcHeader->audio_data, toRead - firstPart);
+    }
+
+    m_audioReadPos = (m_audioReadPos + toRead) % 65536;
+    m_lastAudioWriteSeq = writeSeq;
 
     // Apply mute: send silence
     if (m_pIpcHeader->audio_muted) {
-        memset(pDestBuffer, 0, len);
+        memset(pDestBuffer, 0, toRead);
         return true;
     }
 
@@ -181,7 +223,7 @@ bool ShmConsumer::ReadLatestAudio(uint8_t* pDestBuffer, uint32_t destBufferSize,
         float gainDb  = static_cast<float>(gainX100) / 100.0f;
         float gainLin = powf(10.0f, gainDb / 20.0f);
         int16_t* samples = reinterpret_cast<int16_t*>(pDestBuffer);
-        uint32_t sampleCount = len / 2;
+        uint32_t sampleCount = toRead / 2;
         for (uint32_t i = 0; i < sampleCount; ++i) {
             float v = static_cast<float>(samples[i]) * gainLin;
             if (v >  32767.0f) v =  32767.0f;

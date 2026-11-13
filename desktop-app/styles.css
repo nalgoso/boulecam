@@ -50,6 +50,8 @@ body {
 /* Header */
 header {
   height: 56px;
+  position: relative;
+  z-index: 500;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -57,7 +59,7 @@ header {
   gap: 16px;
   border-bottom: 1px solid var(--border-color);
   background: rgba(10, 11, 18, 0.85);
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .brand {
@@ -1526,6 +1528,160 @@ input:checked + .slider:before {
   color: var(--color-light-green);
   line-height: 1.35;
 }
+
+/* ========================================================
+   FULLSCREEN PROJECTOR TO DETECTED DISPLAYS
+   ======================================================== */
+.projector-container {
+  position: relative;
+  display: inline-block;
+  z-index: 501;
+}
+
+.btn-projector {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border-color);
+  color: #e2e8f0;
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+}
+
+.btn-projector:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.btn-projector.active {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: #10b981;
+  color: #34d399;
+}
+
+.projector-active-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  display: inline-block;
+}
+
+.projector-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 270px;
+  background: #131722;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  z-index: 10000;
+  padding: 8px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.projector-dropdown-header {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 6px 6px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 4px;
+}
+
+.projector-displays-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.projector-display-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  transition: all 0.15s ease;
+  margin-bottom: 3px;
+  border: 1px solid transparent;
+}
+
+.projector-display-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.projector-display-item.active-projector {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.projector-display-item .display-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.projector-display-item .display-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.projector-display-item .display-res {
+  font-size: 0.68rem;
+  color: #94a3b8;
+}
+
+.projector-display-item .display-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+}
+
+.projector-display-item.active-projector .display-badge {
+  background: #10b981;
+  color: #000;
+}
+
+.projector-close-btn {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.projector-close-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+
 
 
 

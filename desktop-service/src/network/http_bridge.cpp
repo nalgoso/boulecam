@@ -206,7 +206,7 @@ static std::vector<std::string> GetLocalIPv4Addresses() {
 
 HttpControlBridge::HttpControlBridge(TcpReceiver& receiver)
     : m_receiver(receiver)
-    , m_port(8090)
+    , m_port(8095)
     , m_listenSocket(INVALID_SOCKET)
     , m_isRunning(false)
     , m_activeDeviceId(1) {
@@ -259,12 +259,15 @@ bool HttpControlBridge::Start(uint16_t port) {
     m_isRunning.store(true);
     m_serverThread = std::thread(&HttpControlBridge::ServerWorker, this);
 
+    SyncDirectShowDevices(false);
+
     std::cout << "[HttpControlBridge] HTTP Control Server listening on http://127.0.0.1:" << m_port << std::endl;
     return true;
 }
 
 void HttpControlBridge::Stop() {
     m_isRunning.store(false);
+    SyncDirectShowDevices(true);
 
     if (m_listenSocket != INVALID_SOCKET) {
         closesocket(m_listenSocket);
@@ -277,12 +280,157 @@ void HttpControlBridge::Stop() {
     }
 }
 
+static const unsigned char g_bridgeVideoFilterData[] = {
+    0x02, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x20, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x30, 0x31, 0x70, 0x69,
+    0x04, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x81, 0x42, 0x6c, 0xfb, 0x53, 0x03, 0xd1, 0x11, 0x90, 0x5f, 0x00, 0x00, 0xc0, 0xcc, 0x16, 0xba,
+    0x76, 0x69, 0x64, 0x73, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+    0x4e, 0x56, 0x31, 0x32, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71
+};
+
+static const unsigned char g_bridgeAudioFilterData[] = {
+    0x02, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x20, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x30, 0x31, 0x70, 0x69,
+    0x04, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x81, 0x42, 0x6c, 0xfb, 0x53, 0x03, 0xd1, 0x11, 0x90, 0x5f, 0x00, 0x00, 0xc0, 0xcc, 0x16, 0xba,
+    0x61, 0x75, 0x64, 0x73, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71
+};
+
+void HttpControlBridge::SyncDirectShowDevices(bool onlyKeepLocked) {
+    static const wchar_t* kVideoCategory = L"{860BB310-5D01-11d0-BD3B-00A0C911CE86}";
+    static const wchar_t* kAudioCategory = L"{33D9A762-90C8-11d0-BD43-00A0C911CE86}";
+    static const wchar_t* kVideoClsids[4] = {
+        L"{6B47C010-85A4-4D6C-9A52-2A1E7F19D3B1}",
+        L"{6B47C011-85A4-4D6C-9A52-2A1E7F19D3B1}",
+        L"{6B47C012-85A4-4D6C-9A52-2A1E7F19D3B1}",
+        L"{6B47C013-85A4-4D6C-9A52-2A1E7F19D3B1}"
+    };
+    static const wchar_t* kAudioClsids[4] = {
+        L"{6B47C020-85A4-4D6C-9A52-2A1E7F19D3B1}",
+        L"{6B47C021-85A4-4D6C-9A52-2A1E7F19D3B1}",
+        L"{6B47C022-85A4-4D6C-9A52-2A1E7F19D3B1}",
+        L"{6B47C023-85A4-4D6C-9A52-2A1E7F19D3B1}"
+    };
+
+    wchar_t exePath[MAX_PATH] = {0};
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    wchar_t* lastSlash = wcsrchr(exePath, L'\\');
+    if (lastSlash) *(lastSlash + 1) = L'\0';
+    std::wstring dllPath = std::wstring(exePath) + L"boulecam-vcam.dll";
+    bool hasDll = (GetFileAttributesW(dllPath.c_str()) != INVALID_FILE_ATTRIBUTES);
+
+    std::map<int, DeviceInfo> devicesSnapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        devicesSnapshot = m_devices;
+    }
+
+    auto setActiveInstance = [&](const wchar_t* clsidStr, const wchar_t* categoryStr,
+                                 const std::wstring& friendlyName,
+                                 const unsigned char* filterData, DWORD filterDataSize) {
+        wchar_t szKey[512];
+        HKEY hKey = NULL;
+
+        // Ensure COM CLSID InprocServer32 in HKCU is up to date
+        wsprintfW(szKey, L"Software\\Classes\\CLSID\\%s", clsidStr);
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, szKey, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+            RegSetValueExW(hKey, NULL, 0, REG_SZ, (const BYTE*)friendlyName.c_str(), (DWORD)((friendlyName.size() + 1) * sizeof(wchar_t)));
+            if (hasDll) {
+                HKEY hInproc = NULL;
+                if (RegCreateKeyExW(hKey, L"InprocServer32", 0, NULL, 0, KEY_WRITE, NULL, &hInproc, NULL) == ERROR_SUCCESS) {
+                    RegSetValueExW(hInproc, NULL, 0, REG_SZ, (const BYTE*)dllPath.c_str(), (DWORD)((dllPath.size() + 1) * sizeof(wchar_t)));
+                    const wchar_t* szThreading = L"Both";
+                    RegSetValueExW(hInproc, L"ThreadingModel", 0, REG_SZ, (const BYTE*)szThreading, (DWORD)((wcslen(szThreading) + 1) * sizeof(wchar_t)));
+                    RegCloseKey(hInproc);
+                }
+            }
+            RegCloseKey(hKey);
+        }
+
+        // Remove any static HKLM Instance entry so HKCU controls visibility and FriendlyName
+        wsprintfW(szKey, L"Software\\Classes\\CLSID\\%s\\Instance\\%s", categoryStr, clsidStr);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, szKey);
+
+        // Register active Instance in HKCU
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, szKey, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+            RegSetValueExW(hKey, L"FriendlyName", 0, REG_SZ, (const BYTE*)friendlyName.c_str(), (DWORD)((friendlyName.size() + 1) * sizeof(wchar_t)));
+            RegSetValueExW(hKey, L"CLSID", 0, REG_SZ, (const BYTE*)clsidStr, (DWORD)((wcslen(clsidStr) + 1) * sizeof(wchar_t)));
+            if (filterData && filterDataSize > 0) {
+                RegSetValueExW(hKey, L"FilterData", 0, REG_BINARY, filterData, filterDataSize);
+            }
+            RegCloseKey(hKey);
+        }
+    };
+
+    auto removeInactiveInstance = [&](const wchar_t* clsidStr, const wchar_t* categoryStr) {
+        wchar_t szKey[512];
+        wsprintfW(szKey, L"Software\\Classes\\CLSID\\%s\\Instance\\%s", categoryStr, clsidStr);
+        RegDeleteKeyW(HKEY_CURRENT_USER, szKey);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, szKey);
+    };
+
+    for (int slot = 1; slot <= 4; ++slot) {
+        auto devIt = devicesSnapshot.find(slot);
+        bool isConnected = (devIt != devicesSnapshot.end() && devIt->second.connected);
+        bool isLocked = m_receiver.IsCameraSlotLocked(slot);
+        auto lockInfo = m_receiver.GetSlotLock(slot);
+
+        bool shouldExpose = (!onlyKeepLocked && isConnected) || isLocked;
+        if (shouldExpose) {
+            std::string rawName = "";
+            if (isConnected && !devIt->second.name.empty() &&
+                devIt->second.name != "Móvil" && devIt->second.name != "Desconocido" &&
+                devIt->second.name != "BouleCam Mobile") {
+                rawName = devIt->second.name;
+            } else if (isLocked && !lockInfo.deviceName.empty() &&
+                       lockInfo.deviceName != "Móvil" && lockInfo.deviceName != "Desconocido" &&
+                       lockInfo.deviceName != "BouleCam Mobile") {
+                rawName = lockInfo.deviceName;
+            } else {
+                rawName = "Cam " + std::to_string(slot);
+            }
+
+            if (m_deviceNameCallback) {
+                m_deviceNameCallback(slot, rawName);
+            }
+
+            wchar_t wideDev[64] = {0};
+            MultiByteToWideChar(CP_UTF8, 0, rawName.c_str(), -1, wideDev, 63);
+            if (wideDev[0] == L'\0') {
+                swprintf_s(wideDev, L"Cam %d", slot);
+            }
+
+            std::wstring videoFriendly = L"BouleCam (" + std::wstring(wideDev) + L")";
+            std::wstring audioFriendly = L"BouleCam Audio (" + std::wstring(wideDev) + L")";
+
+            setActiveInstance(kVideoClsids[slot - 1], kVideoCategory, videoFriendly, g_bridgeVideoFilterData, sizeof(g_bridgeVideoFilterData));
+            setActiveInstance(kAudioClsids[slot - 1], kAudioCategory, audioFriendly, g_bridgeAudioFilterData, sizeof(g_bridgeAudioFilterData));
+        } else {
+            removeInactiveInstance(kVideoClsids[slot - 1], kVideoCategory);
+            removeInactiveInstance(kAudioClsids[slot - 1], kAudioCategory);
+        }
+    }
+}
+
 void HttpControlBridge::SetUsbStatus(bool connected) {
     std::lock_guard<std::mutex> lock(m_statusMutex);
     m_status.usbConnected = connected;
 }
 
 void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name, uint32_t width, uint32_t height, const std::string& ip, bool isUsb, const std::string& uniqueId) {
+    {
     std::lock_guard<std::mutex> lock(m_statusMutex);
     DeviceInfo& dev = m_devices[deviceId];
     dev.id = deviceId;
@@ -317,6 +465,8 @@ void HttpControlBridge::SetDeviceMetadata(int deviceId, const std::string& name,
         if (width > 0) m_status.width = width;
         if (height > 0) m_status.height = height;
     }
+    }
+    SyncDirectShowDevices(false);
 }
 
 bool HttpControlBridge::LockDevice(int camId, bool lock, const std::string& uniqueId, const std::string& devName) {
@@ -334,6 +484,7 @@ bool HttpControlBridge::LockDevice(int camId, bool lock, const std::string& uniq
     }
 
     bool ok = m_receiver.LockCameraSlot(camId, lock, targetUid, targetName);
+    SyncDirectShowDevices(false);
     return ok;
 }
 
@@ -387,6 +538,7 @@ void HttpControlBridge::RemoveDevice(int deviceId) {
         std::lock_guard<std::mutex> lock(m_frameMutex);
         m_deviceBmpFrames.erase(deviceId);
     }
+    SyncDirectShowDevices(false);
 }
 
 bool HttpControlBridge::DisconnectDevice(int deviceId) {
@@ -398,6 +550,9 @@ bool HttpControlBridge::DisconnectDevice(int deviceId) {
 bool HttpControlBridge::SwapDevices(int camA, int camB) {
     if (camA == camB) return true;
     m_receiver.SwapClientIds(camA, camB);
+    if (m_swapCallback) {
+        m_swapCallback(camA, camB);
+    }
     {
         std::lock_guard<std::mutex> lock(m_statusMutex);
         bool hasA = (m_devices.find(camA) != m_devices.end());
@@ -450,6 +605,20 @@ bool HttpControlBridge::SwapDevices(int camA, int camB) {
         }
     }
     {
+        std::lock_guard<std::mutex> lock(m_audioMutex);
+        bool hasA = (m_audioBuffers.find(camA) != m_audioBuffers.end());
+        bool hasB = (m_audioBuffers.find(camB) != m_audioBuffers.end());
+        if (hasA && hasB) {
+            std::swap(m_audioBuffers[camA], m_audioBuffers[camB]);
+        } else if (hasA) {
+            m_audioBuffers[camB] = std::move(m_audioBuffers[camA]);
+            m_audioBuffers.erase(camA);
+        } else if (hasB) {
+            m_audioBuffers[camA] = std::move(m_audioBuffers[camB]);
+            m_audioBuffers.erase(camB);
+        }
+    }
+    {
         std::lock_guard<std::mutex> lock(m_transformMutex);
         bool hasA = (m_deviceTransforms.find(camA) != m_deviceTransforms.end());
         bool hasB = (m_deviceTransforms.find(camB) != m_deviceTransforms.end());
@@ -463,6 +632,7 @@ bool HttpControlBridge::SwapDevices(int camA, int camB) {
             m_deviceTransforms.erase(camB);
         }
     }
+    SyncDirectShowDevices(false);
     return true;
 }
 
@@ -472,14 +642,16 @@ bool HttpControlBridge::ReassignDevice(int fromId, int toId) {
 
 bool HttpControlBridge::RenameDevice(int camId, const std::string& newName) {
     m_receiver.RenameCameraSlot(camId, newName);
-    std::lock_guard<std::mutex> lock(m_statusMutex);
-    if (m_devices.find(camId) != m_devices.end()) {
-        m_devices[camId].name = newName;
-        if (m_activeDeviceId.load() == camId) {
-            m_status.deviceName = newName;
+    {
+        std::lock_guard<std::mutex> lock(m_statusMutex);
+        if (m_devices.find(camId) != m_devices.end()) {
+            m_devices[camId].name = newName;
+            if (m_activeDeviceId.load() == camId) {
+                m_status.deviceName = newName;
+            }
         }
-        return true;
     }
+    SyncDirectShowDevices(false);
     return true;
 }
 
@@ -523,17 +695,18 @@ void HttpControlBridge::UpdateStats(int deviceId, float fps, float latencyMs, ui
 void HttpControlBridge::UpdateDecodedFrame(int deviceId, const uint8_t* pDecodedData, uint32_t dataSize, uint32_t width, uint32_t height, BouleCamPixelFormat pixelFormat, uint16_t rotation) {
     if (!pDecodedData || dataSize == 0 || width == 0 || height == 0) return;
 
-    std::vector<uint8_t> bmp;
+    auto bmpPtr = std::make_shared<std::vector<uint8_t>>();
     if (pixelFormat == BOULECAM_PIXFMT_NV12) {
-        ConvertNV12ToBMP(pDecodedData, width, height, bmp, rotation, dataSize);
+        ConvertNV12ToBMP(pDecodedData, width, height, *bmpPtr, rotation, dataSize);
     }
 
-    if (bmp.empty()) return;
+    if (bmpPtr->empty()) return;
 
     bool isVertical = (rotation == 90 || rotation == 270);
     uint32_t finalWidth = isVertical ? (height) : (width);
     uint32_t finalHeight = isVertical ? (width) : (height);
 
+    bool addedNewDevice = false;
     {
         std::lock_guard<std::mutex> lock(m_statusMutex);
         if (m_devices.find(deviceId) != m_devices.end()) {
@@ -554,6 +727,7 @@ void HttpControlBridge::UpdateDecodedFrame(int deviceId, const uint8_t* pDecoded
             dev.isVertical = isVertical;
             dev.isLocked = m_receiver.IsCameraSlotLocked(deviceId);
             m_devices[deviceId] = dev;
+            addedNewDevice = true;
         }
         if (deviceId == m_activeDeviceId.load() || !m_status.connected || m_status.deviceName == "Desconectado") {
             m_status.connected = true;
@@ -565,12 +739,15 @@ void HttpControlBridge::UpdateDecodedFrame(int deviceId, const uint8_t* pDecoded
             }
         }
     }
+    if (addedNewDevice) {
+        SyncDirectShowDevices(false);
+    }
 
     {
         std::lock_guard<std::mutex> lock(m_frameMutex);
-        m_deviceBmpFrames[deviceId] = bmp;
-        if (deviceId == m_activeDeviceId.load() || m_latestBmpFrame.empty()) {
-            m_latestBmpFrame = bmp;
+        m_deviceBmpFrames[deviceId] = bmpPtr;
+        if (deviceId == m_activeDeviceId.load() || !m_latestBmpFrame || m_latestBmpFrame->empty()) {
+            m_latestBmpFrame = bmpPtr;
         }
     }
 }
@@ -586,979 +763,1008 @@ void HttpControlBridge::ServerWorker() {
             continue;
         }
 
-        // Set socket timeouts to prevent hanging client sockets
-        DWORD timeout = 800;
-        setsockopt(clientSock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-        setsockopt(clientSock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+        // Disable Nagle's algorithm for instant HTTP snapshot delivery
+        BOOL nodelay = TRUE;
+        setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+
+        // Allow persistent HTTP Keep-Alive connections across 60fps polling cycles
+        DWORD rcvTimeout = 5000;
+        DWORD sndTimeout = 2000;
+        setsockopt(clientSock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&rcvTimeout, sizeof(rcvTimeout));
+        setsockopt(clientSock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sndTimeout, sizeof(sndTimeout));
 
         std::thread(&HttpControlBridge::HandleClient, this, clientSock).detach();
     }
 }
 
 void HttpControlBridge::HandleClient(SOCKET clientSock) {
-    char buffer[4096];
-    int bytes = recv(clientSock, buffer, sizeof(buffer) - 1, 0);
-    if (bytes <= 0) {
-        closesocket(clientSock);
-        return;
-    }
-
-    buffer[bytes] = '\0';
-    std::string requestStr(buffer);
-
-    // Parse path
-    std::string firstLine;
-    size_t lineEnd = requestStr.find("\r\n");
-    if (lineEnd != std::string::npos) firstLine = requestStr.substr(0, lineEnd);
-    else firstLine = requestStr;
-
-    // Extract device/cam query parameter (?cam=X or /obs/X or /api/snapshot/X)
-    int requestedCamId = m_activeDeviceId.load();
-    size_t camParam = requestStr.find("cam=");
-    if (camParam != std::string::npos) {
-        size_t endP = requestStr.find_first_of("& \r\n", camParam + 4);
-        std::string numStr = requestStr.substr(camParam + 4, endP - (camParam + 4));
-        try { requestedCamId = std::stoi(numStr); } catch (...) {}
-    } else {
-        // Check path like /obs/1 or /obs/2
-        size_t obsSlash = firstLine.find("GET /obs/");
-        if (obsSlash != std::string::npos) {
-            size_t start = obsSlash + 9;
-            size_t endP = firstLine.find_first_of("? \r\n", start);
-            try { requestedCamId = std::stoi(firstLine.substr(start, endP - start)); } catch (...) {}
-        }
-    }
-
-    // 0. OBS Studio Dedicated Stream per camera (/obs, /obs/1, /obs/2, /obs?cam=X)
-    if (firstLine.find("GET /obs") != std::string::npos || firstLine.find("GET /stream") != std::string::npos) {
-        RecordClientAccess(requestedCamId);
-        std::string camParamStr = std::to_string(requestedCamId);
-        std::string html = 
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<title>BouleCam Stream - Cam " + camParamStr + "</title>"
-            "<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;}"
-            "#v{width:100%;height:100%;object-fit:contain;display:block;transition:transform 0.15s ease;}</style></head>"
-            "<body><img id='v' src='/api/snapshot?cam=" + camParamStr + "' alt='Stream'>"
-            "<script>"
-            "const v = document.getElementById('v');"
-            "let audioCtx = null;"
-            "let nextPlayTime = 0;"
-            "let isAudioActive = false;"
-            "async function audioPollLoop() {"
-            "  if (!isAudioActive) return;"
-            "  try {"
-            "    const res = await fetch('/api/audio_chunk?cam=" + camParamStr + "');"
-            "    if (res.ok && res.status === 200) {"
-            "      const arrayBuf = await res.arrayBuffer();"
-            "      if (arrayBuf.byteLength >= 2) {"
-            "        if (!audioCtx) {"
-            "          audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });"
-            "        }"
-            "        if (audioCtx.state === 'suspended') {"
-            "          await audioCtx.resume();"
-            "        }"
-            "        const sampleCount = Math.floor(arrayBuf.byteLength / 2);"
-            "        const pcm16 = new Int16Array(arrayBuf, 0, sampleCount);"
-            "        const audioBuf = audioCtx.createBuffer(1, sampleCount, 48000);"
-            "        const chan = audioBuf.getChannelData(0);"
-            "        for (let i = 0; i < sampleCount; i++) {"
-            "          chan[i] = pcm16[i] / 32768.0;"
-            "        }"
-            "        const srcNode = audioCtx.createBufferSource();"
-            "        srcNode.buffer = audioBuf;"
-            "        srcNode.connect(audioCtx.destination);"
-            "        const now = audioCtx.currentTime;"
-            "        if (nextPlayTime < now) {"
-            "          nextPlayTime = now + 0.02;"
-            "        }"
-            "        srcNode.start(nextPlayTime);"
-            "        nextPlayTime += audioBuf.duration;"
-            "      }"
-            "    }"
-            "  } catch (e) {}"
-            "  setTimeout(audioPollLoop, 40);"
-            "}"
-            "function initAudio() {"
-            "  if (isAudioActive) return;"
-            "  isAudioActive = true;"
-            "  audioPollLoop();"
-            "}"
-            "window.addEventListener('load', initAudio);"
-            "window.addEventListener('click', initAudio);"
-            "initAudio();"
-            "const params = new URLSearchParams(window.location.search);"
-            "let rot = parseInt(params.get('rot') || '0', 10);"
-            "let mirror = params.get('mirror') === '1';"
-            "function applyT(){"
-            "  v.style.transform = (mirror ? 'scaleX(-1) ' : '') + (rot ? 'rotate(' + rot + 'deg)' : '');"
-            "}"
-            "applyT();"
-            "let lastMirror = mirror;"
-            "let lastRot = rot;"
-            "async function syncLiveTransform(){"
-            "  try {"
-            "    const r = await fetch('/api/cam_transform?cam=" + camParamStr + "');"
-            "    if(r.ok){"
-            "      const d = await r.json();"
-            "      if(d.mirror !== lastMirror || d.rot !== lastRot){"
-            "        lastMirror = d.mirror;"
-            "        lastRot = d.rot;"
-            "        mirror = d.mirror;"
-            "        rot = d.rot;"
-            "        applyT();"
-            "      }"
-            "    }"
-            "  }catch(e){}"
-            "}"
-            "setInterval(syncLiveTransform, 300);"
-            "syncLiveTransform();"
-            "window.addEventListener('dblclick', async () => {"
-            "  mirror = !mirror;"
-            "  applyT();"
-            "  try {"
-            "    await fetch('/api/cam_transform?cam=" + camParamStr + "&mirror=' + (mirror ? '1' : '0') + '&rot=' + rot, {method:'POST'});"
-            "  }catch(e){}"
-            "});"
-            "let curUrl = null;"
-            "async function loop(){"
-            "  try {"
-            "    const r = await fetch('/api/snapshot?cam=" + camParamStr + "');"
-            "    if(r.ok && r.status === 200){"
-            "      const b = await r.blob();"
-            "      if(b.size > 1000){"
-            "        const nu = URL.createObjectURL(b);"
-            "        v.src = nu;"
-            "        if(curUrl) URL.revokeObjectURL(curUrl);"
-            "        curUrl = nu;"
-            "      }"
-            "    }"
-            "  }catch(e){}"
-            "  requestAnimationFrame(loop);"
-            "}"
-            "requestAnimationFrame(loop);"
-            "</script></body></html>";
-
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: text/html\r\n"
-            << "Content-Length: " << html.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << html;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 0.5 Camera Live Transform Sync API (/api/cam_transform)
-    if (firstLine.find("/api/cam_transform") != std::string::npos) {
-        if (firstLine.find("POST") != std::string::npos) {
-            bool mirror = false;
-            int rot = 0;
-            if (firstLine.find("mirror=1") != std::string::npos || firstLine.find("mirror=true") != std::string::npos) {
-                mirror = true;
-            }
-            size_t rotPos = firstLine.find("rot=");
-            if (rotPos != std::string::npos) {
-                rot = std::atoi(firstLine.c_str() + rotPos + 4);
-            }
-            SetDeviceTransform(requestedCamId, mirror, rot);
-        }
-        auto transform = GetDeviceTransform(requestedCamId);
-        std::ostringstream json;
-        json << "{\"cam\":" << requestedCamId 
-             << ",\"mirror\":" << (transform.isMirrored ? "true" : "false")
-             << ",\"rot\":" << transform.rotation << "}";
-        std::string body = json.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 0.7 Real-time Audio Level API (/api/audio_level, /api/audio_level?cam=X)
-    if (firstLine.find("GET /api/audio_level") != std::string::npos) {
-        int level = 0;
-        {
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            if (m_devices.find(requestedCamId) != m_devices.end()) {
-                level = m_devices[requestedCamId].audioLevel;
-            } else {
-                level = m_status.audioLevel;
-            }
-        }
-        std::string body = "{\"level\":" + std::to_string(level) + "}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 0.75 Mic status endpoint — returns mute state, gain, peak level, and ambient mode
-    if (firstLine.find("GET /api/mic/status") != std::string::npos) {
-        bool muted = false;
-        float gainDb = 0.0f;
-        int level = 0;
-        bool isAmbient = false;
-        {
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            auto it = m_devices.find(requestedCamId);
-            if (it != m_devices.end()) {
-                muted  = it->second.isMicMuted;
-                gainDb = it->second.micGainDb;
-                level  = it->second.audioLevel;
-                isAmbient = it->second.isAmbientMic;
-            } else {
-                isAmbient = m_status.isAmbientMic;
-            }
-        }
-        std::ostringstream body;
-        body << "{\"muted\":" << (muted ? "true" : "false")
-             << ",\"gainDb\":" << gainDb
-             << ",\"level\":" << level
-             << ",\"isAmbient\":" << (isAmbient ? "true" : "false")
-             << ",\"mode\":\"" << (isAmbient ? "ambient" : "main") << "\"}";
-        std::string bodyStr = body.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << bodyStr.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-            << "Connection: close\r\n\r\n"
-            << bodyStr;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 0.76 Set mic gain: POST /api/mic/gain?cam=X&db=6.5
-    if (firstLine.find("POST /api/mic/gain") != std::string::npos ||
-        firstLine.find("GET /api/mic/gain") != std::string::npos) {
-        // Parse db param from URL or body
-        float gainDb = 0.0f;
-        auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
-            size_t pos = src.find(key + "=");
-            if (pos == std::string::npos) return "";
-            pos += key.size() + 1;
-            size_t end = src.find_first_of("& \r\n", pos);
-            return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
-        };
-
-        std::string dbStr = parseParam(firstLine, "db");
-        if (dbStr.empty()) dbStr = parseParam(requestStr, "db");
-        if (!dbStr.empty()) {
-            try { gainDb = std::stof(UrlDecode(dbStr)); } catch (...) { gainDb = 0.0f; }
+    char buffer[8192];
+    while (m_isRunning.load()) {
+        int bytes = recv(clientSock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes <= 0) {
+            break;
         }
 
-        // Clamp
-        if (gainDb < -40.0f) gainDb = -40.0f;
-        if (gainDb >  20.0f) gainDb =  20.0f;
+        buffer[bytes] = '\0';
+        std::string requestStr(buffer, bytes);
 
-        SetMicGain(requestedCamId, gainDb);
-
-        std::string body = "{\"status\":\"ok\",\"gainDb\":" + std::to_string(gainDb) + "}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 0.77 Set / Query mic mode (Ambient vs Main): POST /api/mic/mode?cam=X&mode=ambient
-    if (firstLine.find("/api/mic/mode") != std::string::npos) {
-        auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
-            size_t pos = src.find(key + "=");
-            if (pos == std::string::npos) return "";
-            pos += key.size() + 1;
-            size_t end = src.find_first_of("& \r\n", pos);
-            return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
-        };
-
-        std::string modeStr = parseParam(firstLine, "mode");
-        if (modeStr.empty()) modeStr = parseParam(requestStr, "mode");
-
-        bool isAmbient = false;
-        if (!modeStr.empty()) {
-            if (modeStr == "ambient" || modeStr == "1" || modeStr == "true") {
-                isAmbient = true;
+        // Ensure complete HTTP body is received if Content-Length is present (split TCP packets)
+        size_t hdrEnd = requestStr.find("\r\n\r\n");
+        if (hdrEnd != std::string::npos) {
+            size_t clPos = requestStr.find("Content-Length:");
+            if (clPos == std::string::npos) clPos = requestStr.find("content-length:");
+            if (clPos != std::string::npos && clPos < hdrEnd) {
+                size_t valStart = clPos + 15;
+                while (valStart < hdrEnd && requestStr[valStart] == ' ') valStart++;
+                size_t contentLen = static_cast<size_t>(std::atoi(requestStr.c_str() + valStart));
+                size_t totalExpected = hdrEnd + 4 + contentLen;
+                while (requestStr.size() < totalExpected && contentLen < 65536) {
+                    int more = recv(clientSock, buffer, sizeof(buffer) - 1, 0);
+                    if (more <= 0) break;
+                    requestStr.append(buffer, more);
+                }
             }
-            SetAudioMode(requestedCamId, isAmbient);
+        }
 
-            // Send command to mobile phone as well
-            BouleCamCameraCmd cmd{};
-            cmd.magic = BOULECAM_MAGIC;
-            cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
-            cmd.action = 13; // BOULECAM_ACTION_SET_AUDIO_MODE
-            cmd.int_param1 = isAmbient ? 1 : 0;
-            m_receiver.SendCameraCommand(cmd, requestedCamId);
+        bool wantClose = (requestStr.find("Connection: close") != std::string::npos ||
+                          requestStr.find("connection: close") != std::string::npos);
+        const char* connHeader = wantClose ? "Connection: close\r\n" : "Connection: keep-alive\r\nKeep-Alive: timeout=5\r\n";
+
+        // Parse path
+        std::string firstLine;
+        size_t lineEnd = requestStr.find("\r\n");
+        if (lineEnd != std::string::npos) firstLine = requestStr.substr(0, lineEnd);
+        else firstLine = requestStr;
+
+        // Extract device/cam query parameter (?cam=X or /obs/X or /api/snapshot/X)
+        int rawRequestedCamId = -1;
+        size_t camParam = requestStr.find("cam=");
+        if (camParam != std::string::npos) {
+            size_t endP = requestStr.find_first_of("& \r\n", camParam + 4);
+            std::string numStr = requestStr.substr(camParam + 4, endP - (camParam + 4));
+            try { rawRequestedCamId = std::stoi(numStr); } catch (...) {}
         } else {
-            isAmbient = IsAmbientMode(requestedCamId);
-        }
-
-        std::string body = "{\"status\":\"ok\",\"isAmbient\":" + std::string(isAmbient ? "true" : "false") +
-                           ",\"mode\":\"" + std::string(isAmbient ? "ambient" : "main") + "\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    if (firstLine.find("GET /api/audio_chunk") != std::string::npos || firstLine.find("GET /api/audio") != std::string::npos) {
-        RecordClientAccess(requestedCamId);
-        std::vector<uint8_t> chunk;
-        {
-            std::lock_guard<std::mutex> lock(m_audioMutex);
-            if (m_audioBuffers.find(requestedCamId) != m_audioBuffers.end()) {
-                chunk = std::move(m_audioBuffers[requestedCamId]);
-                m_audioBuffers[requestedCamId].clear();
-            }
-        }
-        bool isMuted = false;
-        {
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            auto it = m_devices.find(requestedCamId);
-            if (it != m_devices.end()) {
-                isMuted = it->second.isMicMuted;
-            }
-        }
-        if (isMuted && !chunk.empty()) {
-            std::fill(chunk.begin(), chunk.end(), 0);
-        }
-
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/octet-stream\r\n"
-            << "Content-Length: " << chunk.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-            << "Connection: close\r\n\r\n";
-        std::string header = oss.str();
-        send(clientSock, header.c_str(), static_cast<int>(header.size()), 0);
-        if (!chunk.empty()) {
-            send(clientSock, reinterpret_cast<const char*>(chunk.data()), static_cast<int>(chunk.size()), 0);
-        }
-        closesocket(clientSock);
-        return;
-    }
-
-    // 1. Snapshot Live Video Feed endpoint (/api/snapshot, /api/snapshot?cam=X)
-    if (firstLine.find("GET /api/snapshot") != std::string::npos) {
-        RecordClientAccess(requestedCamId);
-        std::vector<uint8_t> frameData;
-        {
-            std::lock_guard<std::mutex> lock(m_frameMutex);
-            if (m_deviceBmpFrames.find(requestedCamId) != m_deviceBmpFrames.end()) {
-                frameData = m_deviceBmpFrames[requestedCamId];
-            } else if (requestedCamId == 0 && !m_latestBmpFrame.empty()) {
-                frameData = m_latestBmpFrame;
+            // Check path like /obs/1 or /obs/2 or /obs/0
+            size_t obsSlash = firstLine.find("GET /obs/");
+            if (obsSlash != std::string::npos) {
+                size_t start = obsSlash + 9;
+                size_t endP = firstLine.find_first_of("? \r\n", start);
+                try { rawRequestedCamId = std::stoi(firstLine.substr(start, endP - start)); } catch (...) {}
             }
         }
 
-        if (!frameData.empty()) {
+        // Resolve cam=0 or unspecified cam to current activeDeviceId for data endpoints,
+        // while preserving cam=0 in /obs/0 HTML so the projector dynamically tracks activeDeviceId
+        int requestedCamId = (rawRequestedCamId > 0) ? rawRequestedCamId : m_activeDeviceId.load();
+        int obsHtmlCamId = (rawRequestedCamId == 0) ? 0 : requestedCamId;
+
+        // 0. OBS Studio / Projector Dedicated Stream per camera (/obs, /obs/0, /obs/1, /obs/2, /obs?cam=X)
+        if (firstLine.find("GET /obs") != std::string::npos || firstLine.find("GET /stream") != std::string::npos) {
+            RecordClientAccess(requestedCamId);
+            std::string camParamStr = std::to_string(obsHtmlCamId);
+            std::string html = 
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<title>BouleCam Stream - Cam " + camParamStr + "</title>"
+                "<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;}"
+                "#v{width:100%;height:100%;object-fit:contain;display:block;transition:transform 0.15s ease;}</style></head>"
+                "<body><img id='v' src='/api/snapshot?cam=" + camParamStr + "' alt='Stream'>"
+                "<script>"
+                "const v = document.getElementById('v');"
+                "let audioCtx = null;"
+                "let nextPlayTime = 0;"
+                "let isAudioActive = false;"
+                "async function audioPollLoop() {"
+                "  if (!isAudioActive) return;"
+                "  try {"
+                "    const res = await fetch('/api/audio_chunk?cam=" + camParamStr + "');"
+                "    if (res.ok && res.status === 200) {"
+                "      const arrayBuf = await res.arrayBuffer();"
+                "      if (arrayBuf.byteLength >= 2) {"
+                "        if (!audioCtx) {"
+                "          audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });"
+                "        }"
+                "        if (audioCtx.state === 'suspended') {"
+                "          await audioCtx.resume();"
+                "        }"
+                "        const sampleCount = Math.floor(arrayBuf.byteLength / 2);"
+                "        const pcm16 = new Int16Array(arrayBuf, 0, sampleCount);"
+                "        const audioBuf = audioCtx.createBuffer(1, sampleCount, 48000);"
+                "        const chan = audioBuf.getChannelData(0);"
+                "        for (let i = 0; i < sampleCount; i++) {"
+                "          chan[i] = pcm16[i] / 32768.0;"
+                "        }"
+                "        const srcNode = audioCtx.createBufferSource();"
+                "        srcNode.buffer = audioBuf;"
+                "        srcNode.connect(audioCtx.destination);"
+                "        const now = audioCtx.currentTime;"
+                "        if (nextPlayTime < now) {"
+                "          nextPlayTime = now + 0.02;"
+                "        }"
+                "        srcNode.start(nextPlayTime);"
+                "        nextPlayTime += audioBuf.duration;"
+                "      }"
+                "    }"
+                "  } catch (e) {}"
+                "  setTimeout(audioPollLoop, 40);"
+                "}"
+                "function initAudio() {"
+                "  if (isAudioActive) return;"
+                "  isAudioActive = true;"
+                "  audioPollLoop();"
+                "}"
+                "window.addEventListener('load', initAudio);"
+                "window.addEventListener('click', initAudio);"
+                "initAudio();"
+                "const params = new URLSearchParams(window.location.search);"
+                "let rot = parseInt(params.get('rot') || '0', 10);"
+                "let mirror = params.get('mirror') === '1';"
+                "function applyT(){"
+                "  v.style.transform = (mirror ? 'scaleX(-1) ' : '') + (rot ? 'rotate(' + rot + 'deg)' : '');"
+                "}"
+                "applyT();"
+                "let lastMirror = mirror;"
+                "let lastRot = rot;"
+                "async function syncLiveTransform(){"
+                "  try {"
+                "    const r = await fetch('/api/cam_transform?cam=" + camParamStr + "');"
+                "    if(r.ok){"
+                "      const d = await r.json();"
+                "      if(d.mirror !== lastMirror || d.rot !== lastRot){"
+                "        lastMirror = d.mirror;"
+                "        lastRot = d.rot;"
+                "        mirror = d.mirror;"
+                "        rot = d.rot;"
+                "        applyT();"
+                "      }"
+                "    }"
+                "  }catch(e){}"
+                "}"
+                "setInterval(syncLiveTransform, 300);"
+                "syncLiveTransform();"
+                "window.addEventListener('dblclick', async () => {"
+                "  mirror = !mirror;"
+                "  applyT();"
+                "  try {"
+                "    await fetch('/api/cam_transform?cam=" + camParamStr + "&mirror=' + (mirror ? '1' : '0') + '&rot=' + rot, {method:'POST'});"
+                "  }catch(e){}"
+                "});"
+                "let curUrl = null;"
+                "async function loop(){"
+                "  try {"
+                "    const r = await fetch('/api/snapshot?cam=" + camParamStr + "');"
+                "    if(r.ok && r.status === 200){"
+                "      const b = await r.blob();"
+                "      if(b.size > 1000){"
+                "        const nu = URL.createObjectURL(b);"
+                "        v.src = nu;"
+                "        if(curUrl) URL.revokeObjectURL(curUrl);"
+                "        curUrl = nu;"
+                "      }"
+                "    }"
+                "  }catch(e){}"
+                "  requestAnimationFrame(loop);"
+                "}"
+                "requestAnimationFrame(loop);"
+                "</script></body></html>";
+
             std::ostringstream oss;
             oss << "HTTP/1.1 200 OK\r\n"
-                << "Content-Type: image/bmp\r\n"
-                << "Content-Length: " << frameData.size() << "\r\n"
+                << "Content-Type: text/html\r\n"
+                << "Content-Length: " << html.size() << "\r\n"
                 << "Access-Control-Allow-Origin: *\r\n"
-                << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-                << "Connection: close\r\n\r\n";
-            std::string header = oss.str();
-            send(clientSock, header.c_str(), static_cast<int>(header.size()), 0);
-            send(clientSock, (const char*)frameData.data(), static_cast<int>(frameData.size()), 0);
-        } else {
-            std::string emptyResp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
-            send(clientSock, emptyResp.c_str(), static_cast<int>(emptyResp.size()), 0);
+                << connHeader << "\r\n"
+                << html;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
         }
-        closesocket(clientSock);
-        return;
-    }
 
-    // 2. Status API (returns status + all connected devices list)
-    if (firstLine.find("GET /api/status") != std::string::npos) {
-        std::ostringstream json;
-        {
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            std::map<int, DeviceInfo> allDevs = m_devices;
-
-            // CRITICAL: Synchronize with active connections in TcpReceiver
-            auto connectedClients = m_receiver.GetConnectedClients();
-            for (const auto& client : connectedClients) {
-                if (client.id > 0) {
-                    DeviceInfo& dev = allDevs[client.id];
-                    dev.id = client.id;
-                    if (dev.name.empty() || dev.name == "Desconectado" || dev.name.rfind("Cam ", 0) == 0) {
-                        dev.name = client.deviceName.empty() ? ("Cam " + std::to_string(client.id)) : client.deviceName;
-                    }
-                    if (dev.uniqueId.empty()) {
-                        dev.uniqueId = client.uniqueId;
-                    }
-                    if (dev.ip.empty()) {
-                        dev.ip = client.ip;
-                    }
-                    dev.isUsb = (client.ip == "127.0.0.1");
-                    dev.connected = true;
-
-                    // Keep m_devices up to date
-                    if (m_devices.find(client.id) == m_devices.end()) {
-                        m_devices[client.id] = dev;
-                    } else {
-                        m_devices[client.id].connected = true;
-                        if (!client.deviceName.empty() && (m_devices[client.id].name.empty() || m_devices[client.id].name == "Desconectado")) {
-                            m_devices[client.id].name = client.deviceName;
-                        }
-                        if (!client.ip.empty()) m_devices[client.id].ip = client.ip;
-                    }
+        // 0.5 Camera Live Transform Sync API (/api/cam_transform)
+        if (firstLine.find("/api/cam_transform") != std::string::npos) {
+            if (firstLine.find("POST") != std::string::npos) {
+                bool mirror = false;
+                int rot = 0;
+                if (firstLine.find("mirror=1") != std::string::npos || firstLine.find("mirror=true") != std::string::npos) {
+                    mirror = true;
                 }
-            }
-
-            for (auto& pair : allDevs) {
-                pair.second.isLocked = m_receiver.IsCameraSlotLocked(pair.first);
-                if (pair.second.uniqueId.empty()) {
-                    pair.second.uniqueId = m_receiver.GetClientUniqueId(pair.first);
+                size_t rotPos = firstLine.find("rot=");
+                if (rotPos != std::string::npos) {
+                    rot = std::atoi(firstLine.c_str() + rotPos + 4);
                 }
+                SetDeviceTransform(requestedCamId, mirror, rot);
             }
-
-            // Include offline locked devices so OBS and GUI know their slot is permanently reserved
-            auto lockedSlots = m_receiver.GetLockedSlots();
-            for (const auto& lk : lockedSlots) {
-                if (lk.isLocked && allDevs.find(lk.camId) == allDevs.end()) {
-                    DeviceInfo offlineDev;
-                    offlineDev.id = lk.camId;
-                    offlineDev.name = lk.deviceName.empty() ? ("Cam " + std::to_string(lk.camId)) : lk.deviceName;
-                    offlineDev.ip = "";
-                    offlineDev.uniqueId = lk.uniqueId;
-                    offlineDev.isUsb = false;
-                    offlineDev.isLocked = true;
-                    offlineDev.connected = false;
-                    offlineDev.width = 0;
-                    offlineDev.height = 0;
-                    allDevs[lk.camId] = offlineDev;
-                }
-            }
-
-            int activeId = m_activeDeviceId.load();
-            bool activeIsUsb = false;
-            std::string activeIp = "";
-            bool anyConnected = false;
-            for (const auto& pair : allDevs) {
-                if (pair.second.connected) {
-                    anyConnected = true;
-                    break;
-                }
-            }
-            if (anyConnected) {
-                m_status.connected = true;
-                if (allDevs.find(activeId) != allDevs.end() && allDevs[activeId].connected) {
-                    if (m_status.deviceName == "Desconectado" || m_status.deviceName.empty()) {
-                        m_status.deviceName = allDevs[activeId].name;
-                    }
-                }
-            }
-            if (allDevs.find(activeId) != allDevs.end()) {
-                activeIsUsb = allDevs[activeId].isUsb;
-                activeIp = allDevs[activeId].ip;
-            }
-
-            json << "{"
-                 << "\"connected\":" << (m_status.connected ? "true" : "false") << ","
-                 << "\"usbConnected\":" << (m_status.usbConnected ? "true" : "false") << ","
-                 << "\"activeDeviceId\":" << activeId << ","
-                 << "\"activeDeviceIsUsb\":" << (activeIsUsb ? "true" : "false") << ","
-                 << "\"activeDeviceIp\":\"" << activeIp << "\","
-                 << "\"deviceName\":\"" << m_status.deviceName << "\","
-                 << "\"width\":" << m_status.width << ","
-                 << "\"height\":" << m_status.height << ","
-                 << "\"isVertical\":" << (m_status.isVertical ? "true" : "false") << ","
-                 << "\"isDimmed\":" << (m_status.isDimmed ? "true" : "false") << ","
-                 << "\"batteryLevel\":" << m_status.batteryLevel << ","
-                 << "\"isCharging\":" << (m_status.isCharging ? "true" : "false") << ","
-                 << "\"fps\":" << m_status.fps << ","
-                 << "\"latencyMs\":" << m_status.latencyMs << ","
-                 << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
-                 << "\"audioLevel\":" << m_status.audioLevel << ","
-                 << "\"isAmbientMic\":" << (m_status.isAmbientMic ? "true" : "false");
-
-            if (m_pAudioOutput) {
-                json << ",\"audio\":{"
-                     << "\"device\":\"" << m_pAudioOutput->GetDeviceName() << "\","
-                     << "\"isCable\":" << (m_pAudioOutput->IsCableActive() ? "true" : "false") << ","
-                     << "\"level\":" << m_pAudioOutput->GetCurrentLevel() << ","
-                     << "\"muted\":" << (m_pAudioOutput->IsMuted() ? "true" : "false") << ","
-                     << "\"volume\":" << m_pAudioOutput->GetVolume()
-                     << "}";
-            }
-
-            auto latestIps = GetLocalIPv4Addresses();
-            if (!latestIps.empty()) {
-                m_status.localIps = latestIps;
-            }
-
-            json << ",\"localIps\":[";
-            for (size_t i = 0; i < m_status.localIps.size(); ++i) {
-                json << "\"" << m_status.localIps[i] << "\"";
-                if (i + 1 < m_status.localIps.size()) json << ",";
-            }
-            json << "],\"devices\":[";
-
-            size_t idx = 0;
-            for (const auto& pair : allDevs) {
-                const auto& d = pair.second;
-                json << "{"
-                     << "\"id\":" << d.id << ","
-                     << "\"name\":\"" << d.name << "\","
-                     << "\"ip\":\"" << d.ip << "\","
-                     << "\"uniqueId\":\"" << d.uniqueId << "\","
-                     << "\"isUsb\":" << (d.isUsb ? "true" : "false") << ","
-                     << "\"isLocked\":" << (d.isLocked ? "true" : "false") << ","
-                     << "\"connected\":" << (d.connected ? "true" : "false") << ","
-                     << "\"width\":" << d.width << ","
-                     << "\"height\":" << d.height << ","
-                     << "\"isVertical\":" << (d.isVertical ? "true" : "false") << ","
-                     << "\"isDimmed\":" << (d.isDimmed ? "true" : "false") << ","
-                     << "\"batteryLevel\":" << d.batteryLevel << ","
-                     << "\"isCharging\":" << (d.isCharging ? "true" : "false") << ","
-                     << "\"fps\":" << d.fps << ","
-                     << "\"latencyMs\":" << d.latencyMs << ","
-                     << "\"bitrateKbps\":" << d.bitrateKbps << ","
-                     << "\"audioLevel\":" << d.audioLevel << ","
-                     << "\"isAmbientMic\":" << (d.isAmbientMic ? "true" : "false") << ","
-                     << "\"micGainDb\":" << d.micGainDb << ","
-                     << "\"isMicMuted\":" << (d.isMicMuted ? "true" : "false") << ","
-                     << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
-                     << "}";
-                if (++idx < allDevs.size()) json << ",";
-            }
-            json << "]}";
-        }
-
-        std::string body = json.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-
-        // Decay audio level smoothly after reporting
-        {
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            m_status.audioLevel = static_cast<int>(m_status.audioLevel * 0.7f);
-            for (auto& p : m_devices) {
-                p.second.audioLevel = static_cast<int>(p.second.audioLevel * 0.7f);
-            }
-        }
-        return;
-    }
-
-
-    // 2.5 Audio Configuration API (/api/audio_config)
-    if (firstLine.find("/api/audio_config") != std::string::npos) {
-        if (!m_pAudioOutput) {
-            std::string errResp = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n";
-            send(clientSock, errResp.c_str(), static_cast<int>(errResp.size()), 0);
-            closesocket(clientSock);
-            return;
-        }
-
-        if (firstLine.find("POST") != std::string::npos) {
-            size_t devPos = firstLine.find("dev=");
-            if (devPos != std::string::npos) {
-                int devId = std::atoi(firstLine.c_str() + devPos + 4);
-                m_pAudioOutput->SelectDevice(devId);
-            }
-            size_t volPos = firstLine.find("vol=");
-            if (volPos != std::string::npos) {
-                float vol = static_cast<float>(std::atof(firstLine.c_str() + volPos + 4));
-                m_pAudioOutput->SetVolume(vol);
-            }
-            size_t mutePos = firstLine.find("mute=");
-            if (mutePos != std::string::npos) {
-                bool mute = (firstLine.substr(mutePos + 5, 1) == "1");
-                m_pAudioOutput->SetMuted(mute);
-            }
-        }
-
-        auto devList = AudioOutputManager::EnumerateOutputDevices();
-        std::ostringstream json;
-        json << "{\"currentDevice\":\"" << m_pAudioOutput->GetDeviceName() << "\""
-             << ",\"isCable\":" << (m_pAudioOutput->IsCableActive() ? "true" : "false")
-             << ",\"level\":" << m_pAudioOutput->GetCurrentLevel()
-             << ",\"muted\":" << (m_pAudioOutput->IsMuted() ? "true" : "false")
-             << ",\"volume\":" << m_pAudioOutput->GetVolume()
-             << ",\"devices\":[";
-        for (size_t i = 0; i < devList.size(); ++i) {
-            json << "{\"id\":" << devList[i].first << ",\"name\":\"" << devList[i].second << "\"}";
-            if (i + 1 < devList.size()) json << ",";
-        }
-        json << "]}";
-
-        std::string body = json.str();
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3. Select Camera API (/api/select_cam?cam=X)
-    if (firstLine.find("POST /api/select_cam") != std::string::npos || firstLine.find("GET /api/select_cam") != std::string::npos) {
-        if (requestedCamId > 0) {
-            m_activeDeviceId.store(requestedCamId);
-            std::lock_guard<std::mutex> lock(m_statusMutex);
-            if (m_devices.find(requestedCamId) != m_devices.end()) {
-                m_status.deviceName = m_devices[requestedCamId].name;
-                m_status.width = m_devices[requestedCamId].width;
-                m_status.height = m_devices[requestedCamId].height;
-                m_status.isVertical = m_devices[requestedCamId].isVertical;
-            }
-        }
-        std::string body = "{\"status\":\"ok\",\"activeDeviceId\":" + std::to_string(m_activeDeviceId.load()) + "}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3.1 Disconnect Camera API (/api/disconnect_cam?cam=X)
-    if (firstLine.find("/api/disconnect_cam") != std::string::npos || firstLine.find("/api/disconnect") != std::string::npos) {
-        if (requestedCamId > 0) {
-            DisconnectDevice(requestedCamId);
-        }
-        std::string body = "{\"status\":\"ok\",\"disconnectedCam\":" + std::to_string(requestedCamId) + "}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3.2 Reassign / Swap Camera API (/api/swap_cams?camA=1&camB=2 or /api/reassign_cam?from=2&to=1)
-    if (firstLine.find("/api/swap_cams") != std::string::npos || firstLine.find("/api/reassign_cam") != std::string::npos) {
-        int camA = 0, camB = 0;
-        size_t pA = requestStr.find("camA=");
-        if (pA == std::string::npos) pA = requestStr.find("from=");
-        if (pA != std::string::npos) {
-            size_t endP = requestStr.find_first_of("& \r\n", pA + 5);
-            try { camA = std::stoi(requestStr.substr(pA + 5, endP - (pA + 5))); } catch (...) {}
-        }
-        size_t pB = requestStr.find("camB=");
-        if (pB == std::string::npos) pB = requestStr.find("to=");
-        if (pB != std::string::npos) {
-            size_t endP = requestStr.find_first_of("& \r\n", pB + 3);
-            if (requestStr.find("camB=") != std::string::npos) {
-                endP = requestStr.find_first_of("& \r\n", pB + 5);
-                try { camB = std::stoi(requestStr.substr(pB + 5, endP - (pB + 5))); } catch (...) {}
-            } else {
-                try { camB = std::stoi(requestStr.substr(pB + 3, endP - (pB + 3))); } catch (...) {}
-            }
-        }
-
-        bool ok = false;
-        if (camA > 0 && camB > 0) {
-            ok = SwapDevices(camA, camB);
-        }
-
-        std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3.3 Rename Camera API (/api/rename_cam?cam=X&name=CustomName)
-    if (firstLine.find("/api/rename_cam") != std::string::npos) {
-        std::string newName;
-        size_t pName = requestStr.find("name=");
-        if (pName != std::string::npos) {
-            size_t endP = requestStr.find_first_of("& \r\n", pName + 5);
-            newName = requestStr.substr(pName + 5, endP - (pName + 5));
-            newName = UrlDecode(newName);
-        }
-
-        bool ok = false;
-        if (requestedCamId > 0 && !newName.empty()) {
-            ok = RenameDevice(requestedCamId, newName);
-        }
-
-        std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3.35 Lock / Unlock Camera API (/api/lock_cam?cam=X&lock=1&uid=...&name=...)
-    if (firstLine.find("/api/lock_cam") != std::string::npos) {
-        int camId = (requestedCamId > 0) ? requestedCamId : 1;
-        int lockVal = 1;
-        size_t pLock = requestStr.find("lock=");
-        if (pLock != std::string::npos) {
-            size_t endP = requestStr.find_first_of("& \r\n", pLock + 5);
-            std::string valStr = requestStr.substr(pLock + 5, endP - (pLock + 5));
-            try { lockVal = std::stoi(valStr); } catch (...) {}
-        }
-
-        std::string uidStr = "";
-        size_t pUid = requestStr.find("uid=");
-        if (pUid != std::string::npos) {
-            size_t endP = requestStr.find_first_of("& \r\n", pUid + 4);
-            uidStr = UrlDecode(requestStr.substr(pUid + 4, endP - (pUid + 4)));
-        }
-
-        std::string nameStr = "";
-        size_t pName = requestStr.find("name=");
-        if (pName != std::string::npos) {
-            size_t endP = requestStr.find_first_of("& \r\n", pName + 5);
-            nameStr = UrlDecode(requestStr.substr(pName + 5, endP - (pName + 5)));
-        }
-
-        bool ok = LockDevice(camId, lockVal != 0, uidStr, nameStr);
-
-        std::string body = ok ? "{\"status\":\"ok\",\"cam\":" + std::to_string(camId) + ",\"locked\":" + std::string(lockVal != 0 ? "true" : "false") + "}" : "{\"status\":\"error\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3.4 Force Rescan API (/api/rescan)
-    if (firstLine.find("/api/rescan") != std::string::npos) {
-        TriggerRescan();
-        std::string body = "{\"status\":\"ok\",\"message\":\"rescan_triggered\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 3.9 Remote Resolution Selector API (/api/resolution?cam=X&w=1920&h=1080&fps=60)
-    if (firstLine.find("/api/resolution") != std::string::npos) {
-        auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
-            size_t pos = src.find(key + "=");
-            if (pos == std::string::npos) return "";
-            pos += key.size() + 1;
-            size_t end = src.find_first_of("& \r\n", pos);
-            return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
-        };
-
-        std::string wStr = parseParam(firstLine, "w");
-        if (wStr.empty()) wStr = parseParam(requestStr, "w");
-        std::string hStr = parseParam(firstLine, "h");
-        if (hStr.empty()) hStr = parseParam(requestStr, "h");
-        std::string fpsStr = parseParam(firstLine, "fps");
-        if (fpsStr.empty()) fpsStr = parseParam(requestStr, "fps");
-
-        int w = 1920, h = 1080, fps = 60;
-        if (!wStr.empty()) try { w = std::stoi(wStr); } catch (...) {}
-        if (!hStr.empty()) try { h = std::stoi(hStr); } catch (...) {}
-        if (!fpsStr.empty()) try { fps = std::stoi(fpsStr); } catch (...) {}
-
-        BouleCamCameraCmd cmd{};
-        cmd.magic = BOULECAM_MAGIC;
-        cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
-        cmd.action = BOULECAM_ACTION_SET_RESOLUTION; // 15
-        cmd.int_param1 = w;
-        cmd.long_param1 = h;
-        cmd.float_param1 = static_cast<float>(fps);
-
-        bool ok = m_receiver.SendCameraCommand(cmd, requestedCamId);
-        if (!ok) ok = m_receiver.SendCameraCommand(cmd, 0);
-
-        std::string body = ok ? "{\"status\":\"ok\",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(h) + ",\"fps\":" + std::to_string(fps) + "}" : "{\"status\":\"error\"}";
-        std::ostringstream oss;
-        oss << "HTTP/1.1 200 OK\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Content-Length: " << body.size() << "\r\n"
-            << "Access-Control-Allow-Origin: *\r\n"
-            << "Connection: close\r\n\r\n"
-            << body;
-        std::string resp = oss.str();
-        send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-        closesocket(clientSock);
-        return;
-    }
-
-    // 4. Command API (/api/command)
-    if (firstLine.find("POST /api/command") != std::string::npos) {
-        size_t bodyPos = requestStr.find("\r\n\r\n");
-        if (bodyPos != std::string::npos) {
-            std::string body = requestStr.substr(bodyPos + 4);
-            int action = 0, intParam = 0, targetDevId = 0;
-            long long longParam = 0;
-            float floatParam = 0.0f;
-
-            auto parseVal = [&](const std::string& key) -> std::string {
-                size_t p = body.find("\"" + key + "\":");
-                if (p == std::string::npos) return "";
-                p += key.size() + 3;
-                while (p < body.size() && (body[p] == ' ' || body[p] == ':')) p++;
-                size_t end = body.find_first_of(",}", p);
-                if (end == std::string::npos) end = body.size();
-                return body.substr(p, end - p);
-            };
-
-            std::string a = parseVal("action");
-            std::string ip = parseVal("intParam");
-            std::string lp = parseVal("longParam");
-            std::string fp = parseVal("floatParam");
-            std::string dev = parseVal("deviceId");
-
-            if (!a.empty()) action = std::stoi(a);
-            if (!ip.empty()) intParam = std::stoi(ip);
-            if (!lp.empty()) longParam = std::stoll(lp);
-            if (!fp.empty()) floatParam = std::stof(fp);
-            if (!dev.empty()) targetDevId = std::stoi(dev);
-            if (action == 11 && longParam == 0) {
-                // When toggling connection mode, pack PC's primary Wi-Fi IPv4 address
-                std::string bestWifiIp = "";
-                {
-                    std::lock_guard<std::mutex> lock(m_statusMutex);
-                    for (const auto& ip : m_status.localIps) {
-                        if (ip != "127.0.0.1" && ip.find("169.254.") != 0) {
-                            bestWifiIp = ip;
-                            break;
-                        }
-                    }
-                }
-                if (!bestWifiIp.empty()) {
-                    in_addr addr{};
-                    inet_pton(AF_INET, bestWifiIp.c_str(), &addr);
-                    longParam = static_cast<int64_t>(static_cast<uint32_t>(addr.s_addr));
-                }
-                floatParam = (intParam != 0) ? 1.0f : 0.0f;
-            }
-
-            BouleCamCameraCmd cmd{};
-            cmd.magic = BOULECAM_MAGIC;
-            cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
-            cmd.action = static_cast<uint8_t>(action);
-            cmd.int_param1 = intParam;
-            cmd.long_param1 = longParam;
-            cmd.float_param1 = floatParam;
-
-            bool ok = m_receiver.SendCameraCommand(cmd, targetDevId);
-            if (!ok) {
-                ok = m_receiver.SendCameraCommand(cmd, 0); // fallback to all connected clients
-            }
-            if (ok && action == 8) {
-                bool nowMuted = false;
-                {
-                    std::lock_guard<std::mutex> lock(m_statusMutex);
-                    if (m_devices.find(targetDevId) != m_devices.end()) {
-                        m_devices[targetDevId].isMicMuted = (intParam == 0);
-                        nowMuted = m_devices[targetDevId].isMicMuted;
-                    }
-                }
-                // Also mute/unmute the SHM audio flag for the virtual-camera DLL
-                SetMicMute(targetDevId, nowMuted);
-            }
-            if (ok && action == 10) {
-                SetDeviceDimState(targetDevId, intParam != 0);
-            }
-            if (ok && action == 13) {
-                SetAudioMode(targetDevId, intParam == 1);
-            }
-
-            std::string respBody = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"failed\"}";
+            auto transform = GetDeviceTransform(requestedCamId);
+            std::ostringstream json;
+            json << "{\"cam\":" << requestedCamId 
+                 << ",\"mirror\":" << (transform.isMirrored ? "true" : "false")
+                 << ",\"rot\":" << transform.rotation << "}";
+            std::string body = json.str();
             std::ostringstream oss;
             oss << "HTTP/1.1 200 OK\r\n"
                 << "Content-Type: application/json\r\n"
-                << "Content-Length: " << respBody.size() << "\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
                 << "Access-Control-Allow-Origin: *\r\n"
-                << "Connection: close\r\n\r\n"
-                << respBody;
+                << connHeader << "\r\n"
+                << body;
             std::string resp = oss.str();
-            send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0);
-            closesocket(clientSock);
-            return;
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
         }
-    }
 
-    // Default 404
-    std::string notFound = "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-    send(clientSock, notFound.c_str(), static_cast<int>(notFound.size()), 0);
+        // 0.7 Real-time Audio Level API (/api/audio_level, /api/audio_level?cam=X)
+        if (firstLine.find("GET /api/audio_level") != std::string::npos) {
+            int level = 0;
+            {
+                std::lock_guard<std::mutex> lock(m_statusMutex);
+                if (m_devices.find(requestedCamId) != m_devices.end()) {
+                    level = m_devices[requestedCamId].audioLevel;
+                } else {
+                    level = m_status.audioLevel;
+                }
+            }
+            std::string body = "{\"level\":" + std::to_string(level) + "}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 0.75 Mic status endpoint — returns mute state, gain, peak level, and ambient mode
+        if (firstLine.find("GET /api/mic/status") != std::string::npos) {
+            bool muted = false;
+            float gainDb = 0.0f;
+            int level = 0;
+            bool isAmbient = false;
+            {
+                std::lock_guard<std::mutex> lock(m_statusMutex);
+                auto it = m_devices.find(requestedCamId);
+                if (it != m_devices.end()) {
+                    muted  = it->second.isMicMuted;
+                    gainDb = it->second.micGainDb;
+                    level  = it->second.audioLevel;
+                    isAmbient = it->second.isAmbientMic;
+                } else {
+                    isAmbient = m_status.isAmbientMic;
+                }
+            }
+            std::ostringstream body;
+            body << "{\"muted\":" << (muted ? "true" : "false")
+                 << ",\"gainDb\":" << gainDb
+                 << ",\"level\":" << level
+                 << ",\"isAmbient\":" << (isAmbient ? "true" : "false")
+                 << ",\"mode\":\"" << (isAmbient ? "ambient" : "main") << "\"}";
+            std::string bodyStr = body.str();
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << bodyStr.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+                << connHeader << "\r\n"
+                << bodyStr;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 0.76 Set mic gain: POST /api/mic/gain?cam=X&db=6.5
+        if (firstLine.find("POST /api/mic/gain") != std::string::npos ||
+            firstLine.find("GET /api/mic/gain") != std::string::npos) {
+            // Parse db param from URL or body
+            float gainDb = 0.0f;
+            auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
+                size_t pos = src.find(key + "=");
+                if (pos == std::string::npos) return "";
+                pos += key.size() + 1;
+                size_t end = src.find_first_of("& \r\n", pos);
+                return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
+            };
+
+            std::string dbStr = parseParam(firstLine, "db");
+            if (dbStr.empty()) dbStr = parseParam(requestStr, "db");
+            if (!dbStr.empty()) {
+                try { gainDb = std::stof(UrlDecode(dbStr)); } catch (...) { gainDb = 0.0f; }
+            }
+
+            // Clamp
+            if (gainDb < -40.0f) gainDb = -40.0f;
+            if (gainDb >  20.0f) gainDb =  20.0f;
+
+            SetMicGain(requestedCamId, gainDb);
+
+            std::string body = "{\"status\":\"ok\",\"gainDb\":" + std::to_string(gainDb) + "}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 0.77 Set / Query mic mode (Ambient vs Main): POST /api/mic/mode?cam=X&mode=ambient
+        if (firstLine.find("/api/mic/mode") != std::string::npos) {
+            auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
+                size_t pos = src.find(key + "=");
+                if (pos == std::string::npos) return "";
+                pos += key.size() + 1;
+                size_t end = src.find_first_of("& \r\n", pos);
+                return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
+            };
+
+            std::string modeStr = parseParam(firstLine, "mode");
+            if (modeStr.empty()) modeStr = parseParam(requestStr, "mode");
+
+            bool isAmbient = false;
+            if (!modeStr.empty()) {
+                if (modeStr == "ambient" || modeStr == "1" || modeStr == "true") {
+                    isAmbient = true;
+                }
+                SetAudioMode(requestedCamId, isAmbient);
+
+                // Send command to mobile phone as well
+                BouleCamCameraCmd cmd{};
+                cmd.magic = BOULECAM_MAGIC;
+                cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+                cmd.action = 13; // BOULECAM_ACTION_SET_AUDIO_MODE
+                cmd.int_param1 = isAmbient ? 1 : 0;
+                m_receiver.SendCameraCommand(cmd, requestedCamId);
+            } else {
+                isAmbient = IsAmbientMode(requestedCamId);
+            }
+
+            std::string body = "{\"status\":\"ok\",\"isAmbient\":" + std::string(isAmbient ? "true" : "false") +
+                               ",\"mode\":\"" + std::string(isAmbient ? "ambient" : "main") + "\"}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        if (firstLine.find("GET /api/audio_chunk") != std::string::npos || firstLine.find("GET /api/audio") != std::string::npos) {
+            RecordClientAccess(requestedCamId);
+            std::vector<uint8_t> chunk;
+            {
+                std::lock_guard<std::mutex> lock(m_audioMutex);
+                if (m_audioBuffers.find(requestedCamId) != m_audioBuffers.end()) {
+                    chunk = std::move(m_audioBuffers[requestedCamId]);
+                    m_audioBuffers[requestedCamId].clear();
+                }
+            }
+            bool isMuted = false;
+            {
+                std::lock_guard<std::mutex> lock(m_statusMutex);
+                auto it = m_devices.find(requestedCamId);
+                if (it != m_devices.end()) {
+                    isMuted = it->second.isMicMuted;
+                }
+            }
+            if (isMuted && !chunk.empty()) {
+                std::fill(chunk.begin(), chunk.end(), 0);
+            }
+
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/octet-stream\r\n"
+                << "Content-Length: " << chunk.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+                << connHeader << "\r\n";
+            std::string header = oss.str();
+            if (send(clientSock, header.c_str(), static_cast<int>(header.size()), 0) <= 0) break;
+            if (!chunk.empty()) {
+                if (send(clientSock, reinterpret_cast<const char*>(chunk.data()), static_cast<int>(chunk.size()), 0) <= 0) break;
+            }
+            if (wantClose) break;
+            continue;
+        }
+
+        // 1. Snapshot Live Video Feed endpoint (/api/snapshot, /api/snapshot?cam=X)
+        if (firstLine.find("GET /api/snapshot") != std::string::npos) {
+            RecordClientAccess(requestedCamId);
+            std::shared_ptr<const std::vector<uint8_t>> framePtr;
+            {
+                std::lock_guard<std::mutex> lock(m_frameMutex);
+                auto it = m_deviceBmpFrames.find(requestedCamId);
+                if (it != m_deviceBmpFrames.end() && it->second && !it->second->empty()) {
+                    framePtr = it->second;
+                } else if (rawRequestedCamId <= 0 && m_latestBmpFrame && !m_latestBmpFrame->empty()) {
+                    framePtr = m_latestBmpFrame;
+                }
+            }
+
+            if (framePtr && !framePtr->empty()) {
+                std::ostringstream oss;
+                oss << "HTTP/1.1 200 OK\r\n"
+                    << "Content-Type: image/bmp\r\n"
+                    << "Content-Length: " << framePtr->size() << "\r\n"
+                    << "Access-Control-Allow-Origin: *\r\n"
+                    << "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+                    << connHeader << "\r\n";
+                std::string header = oss.str();
+                if (send(clientSock, header.c_str(), static_cast<int>(header.size()), 0) <= 0) break;
+                if (send(clientSock, (const char*)framePtr->data(), static_cast<int>(framePtr->size()), 0) <= 0) break;
+            } else {
+                std::ostringstream oss;
+                oss << "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n" << connHeader << "\r\n";
+                std::string emptyResp = oss.str();
+                if (send(clientSock, emptyResp.c_str(), static_cast<int>(emptyResp.size()), 0) <= 0) break;
+            }
+            if (wantClose) break;
+            continue;
+        }
+
+        // 2. Status API (returns status + all connected devices list)
+        if (firstLine.find("GET /api/status") != std::string::npos) {
+            std::ostringstream json;
+            {
+                std::lock_guard<std::mutex> lock(m_statusMutex);
+                std::map<int, DeviceInfo> allDevs = m_devices;
+
+                // CRITICAL: Synchronize with active connections in TcpReceiver
+                auto connectedClients = m_receiver.GetConnectedClients();
+                for (const auto& client : connectedClients) {
+                    if (client.id > 0) {
+                        DeviceInfo& dev = allDevs[client.id];
+                        dev.id = client.id;
+                        if (dev.name.empty() || dev.name == "Desconectado" || dev.name.rfind("Cam ", 0) == 0) {
+                            dev.name = client.deviceName.empty() ? ("Cam " + std::to_string(client.id)) : client.deviceName;
+                        }
+                        if (dev.uniqueId.empty()) {
+                            dev.uniqueId = client.uniqueId;
+                        }
+                        if (dev.ip.empty()) {
+                            dev.ip = client.ip;
+                        }
+                        dev.isUsb = (client.ip == "127.0.0.1");
+                        dev.connected = true;
+
+                        // Keep m_devices up to date
+                        if (m_devices.find(client.id) == m_devices.end()) {
+                            m_devices[client.id] = dev;
+                        } else {
+                            m_devices[client.id].connected = true;
+                            if (!client.deviceName.empty() && (m_devices[client.id].name.empty() || m_devices[client.id].name == "Desconectado")) {
+                                m_devices[client.id].name = client.deviceName;
+                            }
+                            if (!client.ip.empty()) m_devices[client.id].ip = client.ip;
+                        }
+                    }
+                }
+
+                for (auto& pair : allDevs) {
+                    pair.second.isLocked = m_receiver.IsCameraSlotLocked(pair.first);
+                    if (pair.second.uniqueId.empty()) {
+                        pair.second.uniqueId = m_receiver.GetClientUniqueId(pair.first);
+                    }
+                }
+
+                // Include offline locked devices so OBS and GUI know their slot is permanently reserved
+                auto lockedSlots = m_receiver.GetLockedSlots();
+                for (const auto& lk : lockedSlots) {
+                    if (lk.isLocked && allDevs.find(lk.camId) == allDevs.end()) {
+                        DeviceInfo offlineDev;
+                        offlineDev.id = lk.camId;
+                        offlineDev.name = lk.deviceName.empty() ? ("Cam " + std::to_string(lk.camId)) : lk.deviceName;
+                        offlineDev.ip = "";
+                        offlineDev.uniqueId = lk.uniqueId;
+                        offlineDev.isUsb = false;
+                        offlineDev.isLocked = true;
+                        offlineDev.connected = false;
+                        offlineDev.width = 0;
+                        offlineDev.height = 0;
+                        allDevs[lk.camId] = offlineDev;
+                    }
+                }
+
+                int activeId = m_activeDeviceId.load();
+                bool activeIsUsb = false;
+                std::string activeIp = "";
+                bool anyConnected = false;
+                for (const auto& pair : allDevs) {
+                    if (pair.second.connected) {
+                        anyConnected = true;
+                        break;
+                    }
+                }
+                if (anyConnected) {
+                    m_status.connected = true;
+                    if (allDevs.find(activeId) != allDevs.end() && allDevs[activeId].connected) {
+                        if (m_status.deviceName == "Desconectado" || m_status.deviceName.empty()) {
+                            m_status.deviceName = allDevs[activeId].name;
+                        }
+                    }
+                }
+                if (allDevs.find(activeId) != allDevs.end()) {
+                    activeIsUsb = allDevs[activeId].isUsb;
+                    activeIp = allDevs[activeId].ip;
+                }
+
+                json << "{"
+                     << "\"connected\":" << (m_status.connected ? "true" : "false") << ","
+                     << "\"usbConnected\":" << (m_status.usbConnected ? "true" : "false") << ","
+                     << "\"activeDeviceId\":" << activeId << ","
+                     << "\"activeDeviceIsUsb\":" << (activeIsUsb ? "true" : "false") << ","
+                     << "\"activeDeviceIp\":\"" << activeIp << "\","
+                     << "\"deviceName\":\"" << m_status.deviceName << "\","
+                     << "\"width\":" << m_status.width << ","
+                     << "\"height\":" << m_status.height << ","
+                     << "\"isVertical\":" << (m_status.isVertical ? "true" : "false") << ","
+                     << "\"isDimmed\":" << (m_status.isDimmed ? "true" : "false") << ","
+                     << "\"batteryLevel\":" << m_status.batteryLevel << ","
+                     << "\"isCharging\":" << (m_status.isCharging ? "true" : "false") << ","
+                     << "\"fps\":" << m_status.fps << ","
+                     << "\"latencyMs\":" << m_status.latencyMs << ","
+                     << "\"bitrateKbps\":" << m_status.bitrateKbps << ","
+                     << "\"audioLevel\":" << m_status.audioLevel << ","
+                     << "\"isAmbientMic\":" << (m_status.isAmbientMic ? "true" : "false");
+
+                if (m_pAudioOutput) {
+                    json << ",\"audio\":{"
+                         << "\"device\":\"" << m_pAudioOutput->GetDeviceName() << "\","
+                         << "\"isCable\":" << (m_pAudioOutput->IsCableActive() ? "true" : "false") << ","
+                         << "\"level\":" << m_pAudioOutput->GetCurrentLevel() << ","
+                         << "\"muted\":" << (m_pAudioOutput->IsMuted() ? "true" : "false") << ","
+                         << "\"volume\":" << m_pAudioOutput->GetVolume()
+                         << "}";
+                }
+
+                auto latestIps = GetLocalIPv4Addresses();
+                if (!latestIps.empty()) {
+                    m_status.localIps = latestIps;
+                }
+
+                json << ",\"localIps\":[";
+                for (size_t i = 0; i < m_status.localIps.size(); ++i) {
+                    json << "\"" << m_status.localIps[i] << "\"";
+                    if (i + 1 < m_status.localIps.size()) json << ",";
+                }
+                json << "],\"devices\":[";
+
+                size_t idx = 0;
+                for (const auto& pair : allDevs) {
+                    const auto& d = pair.second;
+                    json << "{"
+                         << "\"id\":" << d.id << ","
+                         << "\"name\":\"" << d.name << "\","
+                         << "\"ip\":\"" << d.ip << "\","
+                         << "\"uniqueId\":\"" << d.uniqueId << "\","
+                         << "\"isUsb\":" << (d.isUsb ? "true" : "false") << ","
+                         << "\"isLocked\":" << (d.isLocked ? "true" : "false") << ","
+                         << "\"connected\":" << (d.connected ? "true" : "false") << ","
+                         << "\"width\":" << d.width << ","
+                         << "\"height\":" << d.height << ","
+                         << "\"isVertical\":" << (d.isVertical ? "true" : "false") << ","
+                         << "\"isDimmed\":" << (d.isDimmed ? "true" : "false") << ","
+                         << "\"batteryLevel\":" << d.batteryLevel << ","
+                         << "\"isCharging\":" << (d.isCharging ? "true" : "false") << ","
+                         << "\"fps\":" << d.fps << ","
+                         << "\"latencyMs\":" << d.latencyMs << ","
+                         << "\"bitrateKbps\":" << d.bitrateKbps << ","
+                         << "\"audioLevel\":" << d.audioLevel << ","
+                         << "\"isAmbientMic\":" << (d.isAmbientMic ? "true" : "false") << ","
+                         << "\"micGainDb\":" << d.micGainDb << ","
+                         << "\"isMicMuted\":" << (d.isMicMuted ? "true" : "false") << ","
+                         << "\"obsUrl\":\"http://127.0.0.1:" << m_port << "/obs/" << d.id << "\""
+                         << "}";
+                    if (++idx < allDevs.size()) json << ",";
+                }
+                json << "]}";
+            }
+
+            std::string body = json.str();
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            bool sendOk = (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) > 0);
+
+            // Decay audio level smoothly after reporting
+            {
+                std::lock_guard<std::mutex> lock(m_statusMutex);
+                m_status.audioLevel = static_cast<int>(m_status.audioLevel * 0.7f);
+                for (auto& p : m_devices) {
+                    p.second.audioLevel = static_cast<int>(p.second.audioLevel * 0.7f);
+                }
+            }
+            if (!sendOk || wantClose) break;
+            continue;
+        }
+
+
+        // 2.5 Audio Configuration API (/api/audio_config)
+        if (firstLine.find("/api/audio_config") != std::string::npos) {
+            if (!m_pAudioOutput) {
+                std::string errResp = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n" + std::string(connHeader) + "\r\n";
+                if (send(clientSock, errResp.c_str(), static_cast<int>(errResp.size()), 0) <= 0 || wantClose) break;
+                continue;
+            }
+
+            if (firstLine.find("POST") != std::string::npos) {
+                size_t devPos = firstLine.find("dev=");
+                if (devPos != std::string::npos) {
+                    int devId = std::atoi(firstLine.c_str() + devPos + 4);
+                    m_pAudioOutput->SelectDevice(devId);
+                }
+                size_t volPos = firstLine.find("vol=");
+                if (volPos != std::string::npos) {
+                    float vol = static_cast<float>(std::atof(firstLine.c_str() + volPos + 4));
+                    m_pAudioOutput->SetVolume(vol);
+                }
+                size_t mutePos = firstLine.find("mute=");
+                if (mutePos != std::string::npos) {
+                    bool mute = (firstLine.substr(mutePos + 5, 1) == "1");
+                    m_pAudioOutput->SetMuted(mute);
+                }
+            }
+
+            auto devList = AudioOutputManager::EnumerateOutputDevices();
+            std::ostringstream json;
+            json << "{\"currentDevice\":\"" << m_pAudioOutput->GetDeviceName() << "\""
+                 << ",\"isCable\":" << (m_pAudioOutput->IsCableActive() ? "true" : "false")
+                 << ",\"level\":" << m_pAudioOutput->GetCurrentLevel()
+                 << ",\"muted\":" << (m_pAudioOutput->IsMuted() ? "true" : "false")
+                 << ",\"volume\":" << m_pAudioOutput->GetVolume()
+                 << ",\"devices\":[";
+            for (size_t i = 0; i < devList.size(); ++i) {
+                json << "{\"id\":" << devList[i].first << ",\"name\":\"" << devList[i].second << "\"}";
+                if (i + 1 < devList.size()) json << ",";
+            }
+            json << "]}";
+
+            std::string body = json.str();
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3. Select Camera API (/api/select_cam?cam=X)
+        if (firstLine.find("POST /api/select_cam") != std::string::npos || firstLine.find("GET /api/select_cam") != std::string::npos) {
+            if (requestedCamId > 0) {
+                m_activeDeviceId.store(requestedCamId);
+                std::lock_guard<std::mutex> lock(m_statusMutex);
+                if (m_devices.find(requestedCamId) != m_devices.end()) {
+                    m_status.deviceName = m_devices[requestedCamId].name;
+                    m_status.width = m_devices[requestedCamId].width;
+                    m_status.height = m_devices[requestedCamId].height;
+                    m_status.isVertical = m_devices[requestedCamId].isVertical;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lk(m_frameMutex);
+                auto it = m_deviceBmpFrames.find(m_activeDeviceId.load());
+                if (it != m_deviceBmpFrames.end()) {
+                    m_latestBmpFrame = it->second;
+                }
+            }
+            std::string body = "{\"status\":\"ok\",\"activeDeviceId\":" + std::to_string(m_activeDeviceId.load()) + "}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3.1 Disconnect Camera API (/api/disconnect_cam?cam=X)
+        if (firstLine.find("/api/disconnect_cam") != std::string::npos || firstLine.find("/api/disconnect") != std::string::npos) {
+            if (requestedCamId > 0) {
+                DisconnectDevice(requestedCamId);
+            }
+            std::string body = "{\"status\":\"ok\",\"disconnectedCam\":" + std::to_string(requestedCamId) + "}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3.2 Reassign / Swap Camera API (/api/swap_cams?camA=1&camB=2 or /api/reassign_cam?from=2&to=1)
+        if (firstLine.find("/api/swap_cams") != std::string::npos || firstLine.find("/api/reassign_cam") != std::string::npos) {
+            int camA = 0, camB = 0;
+            size_t pA = requestStr.find("camA=");
+            if (pA == std::string::npos) pA = requestStr.find("from=");
+            if (pA != std::string::npos) {
+                size_t endP = requestStr.find_first_of("& \r\n", pA + 5);
+                try { camA = std::stoi(requestStr.substr(pA + 5, endP - (pA + 5))); } catch (...) {}
+            }
+            size_t pB = requestStr.find("camB=");
+            if (pB == std::string::npos) pB = requestStr.find("to=");
+            if (pB != std::string::npos) {
+                size_t endP = requestStr.find_first_of("& \r\n", pB + 3);
+                if (requestStr.find("camB=") != std::string::npos) {
+                    endP = requestStr.find_first_of("& \r\n", pB + 5);
+                    try { camB = std::stoi(requestStr.substr(pB + 5, endP - (pB + 5))); } catch (...) {}
+                } else {
+                    try { camB = std::stoi(requestStr.substr(pB + 3, endP - (pB + 3))); } catch (...) {}
+                }
+            }
+
+            bool ok = false;
+            if (camA > 0 && camB > 0) {
+                ok = SwapDevices(camA, camB);
+            }
+
+            std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3.3 Rename Camera API (/api/rename_cam?cam=X&name=CustomName)
+        if (firstLine.find("/api/rename_cam") != std::string::npos) {
+            std::string newName;
+            size_t pName = requestStr.find("name=");
+            if (pName != std::string::npos) {
+                size_t endP = requestStr.find_first_of("& \r\n", pName + 5);
+                newName = requestStr.substr(pName + 5, endP - (pName + 5));
+                newName = UrlDecode(newName);
+            }
+
+            bool ok = false;
+            if (requestedCamId > 0 && !newName.empty()) {
+                ok = RenameDevice(requestedCamId, newName);
+            }
+
+            std::string body = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3.35 Lock / Unlock Camera API (/api/lock_cam?cam=X&lock=1&uid=...&name=...)
+        if (firstLine.find("/api/lock_cam") != std::string::npos) {
+            int camId = (requestedCamId > 0) ? requestedCamId : 1;
+            int lockVal = 1;
+            size_t pLock = requestStr.find("lock=");
+            if (pLock != std::string::npos) {
+                size_t endP = requestStr.find_first_of("& \r\n", pLock + 5);
+                std::string valStr = requestStr.substr(pLock + 5, endP - (pLock + 5));
+                try { lockVal = std::stoi(valStr); } catch (...) {}
+            }
+
+            std::string uidStr = "";
+            size_t pUid = requestStr.find("uid=");
+            if (pUid != std::string::npos) {
+                size_t endP = requestStr.find_first_of("& \r\n", pUid + 4);
+                uidStr = UrlDecode(requestStr.substr(pUid + 4, endP - (pUid + 4)));
+            }
+
+            std::string nameStr = "";
+            size_t pName = requestStr.find("name=");
+            if (pName != std::string::npos) {
+                size_t endP = requestStr.find_first_of("& \r\n", pName + 5);
+                nameStr = UrlDecode(requestStr.substr(pName + 5, endP - (pName + 5)));
+            }
+
+            bool ok = LockDevice(camId, lockVal != 0, uidStr, nameStr);
+
+            std::string body = ok ? "{\"status\":\"ok\",\"cam\":" + std::to_string(camId) + ",\"locked\":" + std::string(lockVal != 0 ? "true" : "false") + "}" : "{\"status\":\"error\"}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3.4 Force Rescan API (/api/rescan)
+        if (firstLine.find("/api/rescan") != std::string::npos) {
+            TriggerRescan();
+            std::string body = "{\"status\":\"ok\",\"message\":\"rescan_triggered\"}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 3.9 Remote Resolution Selector API (/api/resolution?cam=X&w=1920&h=1080&fps=60)
+        if (firstLine.find("/api/resolution") != std::string::npos) {
+            auto parseParam = [&](const std::string& src, const std::string& key) -> std::string {
+                size_t pos = src.find(key + "=");
+                if (pos == std::string::npos) return "";
+                pos += key.size() + 1;
+                size_t end = src.find_first_of("& \r\n", pos);
+                return (end == std::string::npos) ? src.substr(pos) : src.substr(pos, end - pos);
+            };
+
+            std::string wStr = parseParam(firstLine, "w");
+            if (wStr.empty()) wStr = parseParam(requestStr, "w");
+            std::string hStr = parseParam(firstLine, "h");
+            if (hStr.empty()) hStr = parseParam(requestStr, "h");
+            std::string fpsStr = parseParam(firstLine, "fps");
+            if (fpsStr.empty()) fpsStr = parseParam(requestStr, "fps");
+
+            int w = 1920, h = 1080, fps = 60;
+            if (!wStr.empty()) try { w = std::stoi(wStr); } catch (...) {}
+            if (!hStr.empty()) try { h = std::stoi(hStr); } catch (...) {}
+            if (!fpsStr.empty()) try { fps = std::stoi(fpsStr); } catch (...) {}
+
+            BouleCamCameraCmd cmd{};
+            cmd.magic = BOULECAM_MAGIC;
+            cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+            cmd.action = BOULECAM_ACTION_SET_RESOLUTION; // 15
+            cmd.int_param1 = w;
+            cmd.long_param1 = h;
+            cmd.float_param1 = static_cast<float>(fps);
+
+            bool ok = m_receiver.SendCameraCommand(cmd, requestedCamId);
+            if (!ok) ok = m_receiver.SendCameraCommand(cmd, 0);
+
+            std::string body = ok ? "{\"status\":\"ok\",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(h) + ",\"fps\":" + std::to_string(fps) + "}" : "{\"status\":\"error\"}";
+            std::ostringstream oss;
+            oss << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Access-Control-Allow-Origin: *\r\n"
+                << connHeader << "\r\n"
+                << body;
+            std::string resp = oss.str();
+            if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+            continue;
+        }
+
+        // 4. Command API (/api/command)
+        if (firstLine.find("POST /api/command") != std::string::npos) {
+            size_t bodyPos = requestStr.find("\r\n\r\n");
+            if (bodyPos != std::string::npos) {
+                std::string body = requestStr.substr(bodyPos + 4);
+                int action = 0, intParam = 0, targetDevId = 0;
+                long long longParam = 0;
+                float floatParam = 0.0f;
+
+                auto parseVal = [&](const std::string& key) -> std::string {
+                    size_t p = body.find("\"" + key + "\":");
+                    if (p == std::string::npos) return "";
+                    p += key.size() + 3;
+                    while (p < body.size() && (body[p] == ' ' || body[p] == ':')) p++;
+                    size_t end = body.find_first_of(",}", p);
+                    if (end == std::string::npos) end = body.size();
+                    return body.substr(p, end - p);
+                };
+
+                std::string a = parseVal("action");
+                std::string ip = parseVal("intParam");
+                std::string lp = parseVal("longParam");
+                std::string fp = parseVal("floatParam");
+                std::string dev = parseVal("deviceId");
+
+                if (!a.empty()) action = std::stoi(a);
+                if (!ip.empty()) intParam = std::stoi(ip);
+                if (!lp.empty()) longParam = std::stoll(lp);
+                if (!fp.empty()) floatParam = std::stof(fp);
+                if (!dev.empty()) targetDevId = std::stoi(dev);
+                if (action == 11 && longParam == 0) {
+                    // When toggling connection mode, pack PC's primary Wi-Fi IPv4 address
+                    std::string bestWifiIp = "";
+                    {
+                        std::lock_guard<std::mutex> lock(m_statusMutex);
+                        for (const auto& ipAddr : m_status.localIps) {
+                            if (ipAddr != "127.0.0.1" && ipAddr.find("169.254.") != 0) {
+                                bestWifiIp = ipAddr;
+                                break;
+                            }
+                        }
+                    }
+                    if (!bestWifiIp.empty()) {
+                        in_addr addr{};
+                        inet_pton(AF_INET, bestWifiIp.c_str(), &addr);
+                        longParam = static_cast<int64_t>(static_cast<uint32_t>(addr.s_addr));
+                    }
+                    floatParam = (intParam != 0) ? 1.0f : 0.0f;
+                }
+
+                BouleCamCameraCmd cmd{};
+                cmd.magic = BOULECAM_MAGIC;
+                cmd.packet_type = BOULECAM_PKT_CAMERA_CMD;
+                cmd.action = static_cast<uint8_t>(action);
+                cmd.int_param1 = intParam;
+                cmd.long_param1 = longParam;
+                cmd.float_param1 = floatParam;
+
+                bool ok = m_receiver.SendCameraCommand(cmd, targetDevId);
+                if (!ok) {
+                    ok = m_receiver.SendCameraCommand(cmd, 0); // fallback to all connected clients
+                }
+                if (ok && action == 8) {
+                    bool nowMuted = false;
+                    {
+                        std::lock_guard<std::mutex> lock(m_statusMutex);
+                        if (m_devices.find(targetDevId) != m_devices.end()) {
+                            m_devices[targetDevId].isMicMuted = (intParam == 0);
+                            nowMuted = m_devices[targetDevId].isMicMuted;
+                        }
+                    }
+                    // Also mute/unmute the SHM audio flag for the virtual-camera DLL
+                    SetMicMute(targetDevId, nowMuted);
+                }
+                if (ok && action == 10) {
+                    SetDeviceDimState(targetDevId, intParam != 0);
+                }
+                if (ok && action == 13) {
+                    SetAudioMode(targetDevId, intParam == 1);
+                }
+
+                std::string respBody = ok ? "{\"status\":\"ok\"}" : "{\"status\":\"failed\"}";
+                std::ostringstream oss;
+                oss << "HTTP/1.1 200 OK\r\n"
+                    << "Content-Type: application/json\r\n"
+                    << "Content-Length: " << respBody.size() << "\r\n"
+                    << "Access-Control-Allow-Origin: *\r\n"
+                    << connHeader << "\r\n"
+                    << respBody;
+                std::string resp = oss.str();
+                if (send(clientSock, resp.c_str(), static_cast<int>(resp.size()), 0) <= 0 || wantClose) break;
+                continue;
+            }
+        }
+
+        // Default 404
+        std::ostringstream oss;
+        oss << "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n" << connHeader << "\r\n";
+        std::string notFound = oss.str();
+        if (send(clientSock, notFound.c_str(), static_cast<int>(notFound.size()), 0) <= 0 || wantClose) break;
+    }
     closesocket(clientSock);
 }
 
